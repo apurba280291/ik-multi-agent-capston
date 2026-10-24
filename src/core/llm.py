@@ -8,11 +8,13 @@ so the product degrades gracefully instead of failing.
 from __future__ import annotations
 
 import os
+import threading
 from abc import ABC, abstractmethod
 
 from src.core.config import Settings
 from src.utils.logging_utils import get_logger
 from src.utils.retry import RateLimiter, retry_with_backoff
+from src.utils.usage_log import estimate_tokens, record_usage
 
 log = get_logger(__name__)
 
@@ -44,19 +46,37 @@ class _RemoteLLM(LLMClient):
         self.temperature = float(settings.get("llm.temperature", 0.2))
         self.max_tokens = int(settings.get("llm.max_tokens", 900))
         self._limiter = RateLimiter(int(settings.get("llm.requests_per_minute", 50)))
+        self._usage = threading.local()  # per-thread, so concurrent Streamlit sessions don't mix counts
 
     @abstractmethod
     def _call(self, system: str, prompt: str) -> str: ...
 
+    def _note_usage(self, input_tokens: int | None, output_tokens: int | None) -> None:
+        """Called by each provider's ``_call`` with the token counts its API reported."""
+        self._usage.counts = (input_tokens, output_tokens)
+
     def generate(self, system: str, prompt: str) -> str:
         self._limiter.wait()
+        self._usage.counts = None
         try:
             text = retry_with_backoff(lambda: self._call(system, prompt), retries=2, base_delay=1.0)
         except Exception as exc:
             raise LLMError(f"{self.name} call failed: {exc}") from exc
         if not text or not text.strip():
             raise LLMError(f"{self.name} returned an empty response")
+        self._record_usage(system, prompt, text)
         return text.strip()
+
+    def _record_usage(self, system: str, prompt: str, text: str) -> None:
+        reported = getattr(self._usage, "counts", None) or (None, None)
+        tokens_in, tokens_out = reported
+        estimated = tokens_in is None or tokens_out is None
+        record_usage(
+            self.name, getattr(self, "model", ""),
+            estimate_tokens(system + prompt) if tokens_in is None else tokens_in,
+            estimate_tokens(text) if tokens_out is None else tokens_out,
+            estimated,
+        )
 
 
 class AnthropicLLM(_RemoteLLM):
@@ -77,6 +97,8 @@ class AnthropicLLM(_RemoteLLM):
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
+        usage = getattr(msg, "usage", None)
+        self._note_usage(getattr(usage, "input_tokens", None), getattr(usage, "output_tokens", None))
         return "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
 
 
@@ -100,6 +122,8 @@ class GeminiLLM(_RemoteLLM):
                 "max_output_tokens": self.max_tokens,
             },
         )
+        usage = getattr(resp, "usage_metadata", None)
+        self._note_usage(getattr(usage, "prompt_token_count", None), getattr(usage, "candidates_token_count", None))
         return resp.text or ""
 
 
@@ -120,6 +144,8 @@ class OpenAILLM(_RemoteLLM):
             max_tokens=self.max_tokens,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         )
+        usage = getattr(resp, "usage", None)
+        self._note_usage(getattr(usage, "prompt_tokens", None), getattr(usage, "completion_tokens", None))
         return resp.choices[0].message.content or ""
 
 

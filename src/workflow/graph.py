@@ -16,6 +16,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from src.core.base_agent import BaseAgent
+from src.core.guardrails import BLOCKED_REPLY, is_injection, redact_pii
 from src.core.models import AgentContext, AgentResponse, Source
 from src.utils.formatting import citation_block, with_disclaimer
 from src.utils.logging_utils import get_logger
@@ -81,18 +82,28 @@ def _update_profile(profile: dict[str, Any], query: str) -> dict[str, Any]:
 
 def build_graph(agents: dict[str, BaseAgent], router: Router, max_history: int = 20, checkpointer=None):
     def understand(state: FinanceState) -> dict[str, Any]:
-        query = state.get("query", "")
+        # Input guardrails: mask personal data before it reaches agents/LLM/history, and flag prompt injection.
+        query, redacted = redact_pii(state.get("query", ""))
+        blocked = is_injection(query)
         tickers = extract_tickers(query)
         last = tickers + [t for t in state.get("last_tickers", []) if t not in tickers] if tickers else state.get("last_tickers", [])
+        trace = [f"understand: tickers={tickers or '-'}"]
+        if redacted:
+            trace.append("guardrail: PII redacted")
+        if blocked:
+            trace.append("guardrail: prompt injection blocked")
         return {
+            "query": query,
             "profile": _update_profile(state.get("profile", {}), query),
             "last_tickers": last[:5],
-            "responses": [], "queue": [], "intents": [], "shared": {}, "flags": {},
+            "responses": [], "queue": [], "intents": [], "shared": {}, "flags": {"blocked": blocked},
             "final_answer": "", "sources": [], "agents_used": [],
-            "trace": [f"understand: tickers={tickers or '-'}"],
+            "trace": trace,
         }
 
     def route(state: FinanceState) -> dict[str, Any]:
+        if state.get("flags", {}).get("blocked"):
+            return {}  # nothing to route; compose sends the refusal
         d = router.route(state["query"], state.get("history", []))
         flags = {"greeting": d.greeting, "off_topic": d.off_topic, "advice": d.advice_request}
         return {
@@ -127,7 +138,9 @@ def build_graph(agents: dict[str, BaseAgent], router: Router, max_history: int =
         flags, responses = state.get("flags", {}), state.get("responses", [])
         update: dict[str, Any] = {}
         sources: list[Source] = []
-        if flags.get("greeting"):
+        if flags.get("blocked"):
+            answer = BLOCKED_REPLY
+        elif flags.get("greeting"):
             answer = INTRO
         elif flags.get("off_topic"):
             answer = OFF_TOPIC

@@ -11,6 +11,10 @@ T = TypeVar("T")
 log = get_logger(__name__)
 
 
+MAX_ATTEMPTS = 5  # hard ceiling on attempts, whatever the caller or config asks for
+MAX_DELAY = 30.0  # seconds; caps a single backoff sleep so total wait stays bounded
+
+
 def retry_with_backoff(
     fn: Callable[[], T],
     retries: int = 3,
@@ -18,15 +22,16 @@ def retry_with_backoff(
     exceptions: tuple[type[BaseException], ...] = (Exception,),
     sleep: Callable[[float], None] = time.sleep,
 ) -> T:
-    """Call ``fn`` up to ``retries`` times, doubling the delay after each failure."""
+    """Call ``fn`` up to ``retries`` times (never more than ``MAX_ATTEMPTS``), doubling the delay after each failure."""
+    retries = min(max(1, retries), MAX_ATTEMPTS)
     last: BaseException | None = None
-    for attempt in range(max(1, retries)):
+    for attempt in range(retries):
         try:
             return fn()
         except exceptions as exc:  # noqa: PERF203
             last = exc
             if attempt < retries - 1:
-                delay = base_delay * (2**attempt)
+                delay = min(base_delay * (2**attempt), MAX_DELAY)
                 log.warning("attempt %d/%d failed (%s); retrying in %.2fs", attempt + 1, retries, exc, delay)
                 sleep(delay)
     assert last is not None

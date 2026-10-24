@@ -1,0 +1,13 @@
+flowchart TD
+    Q([User message]) --> UN["understand<br/>extract tickers · update profile<br/>reset per-turn fields"]
+    UN --> RO["route<br/>choose agents + flags"]
+    RO --> D{queue empty?}
+
+    D -- "greeting / off-topic" --> CO
+    D -- "no" --> AGN["run first agent in queue<br/>pop itself · write AgentResponse<br/>leave data in shared"]
+    AGN --> D2{more agents<br/>in queue?}
+    D2 -- yes --> AGN
+    D2 -- no --> CO
+
+    CO["compose<br/>merge sections · dedupe citations<br/>advice note · disclaimer · save history"]
+    CO --> ANS([Final answer + sources])

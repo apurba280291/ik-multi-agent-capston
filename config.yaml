@@ -13,6 +13,10 @@ llm:
   temperature: 0.2
   max_tokens: 900
   requests_per_minute: 50
+  # Token savers
+  routing_confident_score: 5      # skip the LLM routing call when keyword rules score >= this (0 = always ask the LLM)
+  polish_max_chars: 6000          # drafts longer than this are returned as-is, no LLM rewrite (0 = no limit)
+  polish_cache_ttl_seconds: 3600  # reuse the rewrite when the same agent gets an identical query + draft
 
 market:
   # yfinance | alpha_vantage | mock

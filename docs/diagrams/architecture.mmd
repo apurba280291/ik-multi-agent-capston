@@ -1,0 +1,47 @@
+flowchart TB
+    subgraph Clients
+        UI["Streamlit UI<br/>chat · portfolio · market · goals · knowledge"]
+        MCP["MCP client<br/>Claude Desktop"]
+    end
+
+    UI --> FA
+    MCP --> MS["mcp_server/server.py"] --> FA
+
+    FA["FinanceAssistant facade<br/>workflow/assistant.py"]
+
+    subgraph LG["LangGraph StateGraph · MemorySaver checkpoint per session"]
+        direction LR
+        U[understand] --> R[route] --> AG["agent nodes<br/>1–3 in pipeline order"] --> C[compose]
+    end
+    FA --> LG
+    RT["Router<br/>LLM JSON classify or keyword rules"] -.-> R
+
+    subgraph Agents
+        A1["Market Analysis"]
+        A2["News Synthesizer"]
+        A3["Portfolio Analysis"]
+        A4["Goal Planning"]
+        A5["Tax Education"]
+        A6["Finance Q&A"]
+    end
+    AG --- Agents
+
+    subgraph Services
+        MD["MarketDataService<br/>cache → yfinance → Alpha Vantage<br/>→ stale cache → mock"]
+        RAG["Retriever<br/>FAISS + TF-IDF"]
+        FM["Pure functions<br/>finance_math · portfolio_analysis · goal_planner"]
+    end
+    A1 --> MD
+    A2 --> MD
+    A2 --> RAG
+    A3 --> FM
+    A3 --> MD
+    A4 --> FM
+    A5 --> RAG
+    A6 --> RAG
+
+    KB[("Knowledge base<br/>81 articles · 48 glossary terms")] --> RAG
+    LLM["LLM client (optional)<br/>Anthropic · Gemini · OpenAI<br/>fallback: OfflineLLM"]
+    Agents -.-> LLM
+    RT -.-> LLM
+    CFG["config.yaml + env vars"] -.-> LG

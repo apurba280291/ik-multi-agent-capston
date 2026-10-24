@@ -1,11 +1,13 @@
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+os.environ["FINANCE_LOG_DIR"] = tempfile.mkdtemp(prefix="finnie-logs-")  # keep test runs out of the real logs/
 os.environ["FINANCE_LLM_PROVIDER"] = "offline"
 os.environ["FINANCE_MARKET_PROVIDER"] = "mock"
 for key in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ALPHA_VANTAGE_API_KEY"):

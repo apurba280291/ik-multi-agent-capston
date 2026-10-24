@@ -10,6 +10,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from src.core.guardrails import is_advice_request
 from src.core.llm import LLMClient, LLMError, OfflineLLM
 from src.utils.logging_utils import get_logger
 from src.utils.parsing import extract_tickers, parse_holdings
@@ -56,9 +57,6 @@ FINANCE_WORDS = re.compile(
 )
 FOLLOW_UP = re.compile(r"\b(it|that|this|them|those|these|why|how come|more|and|also|then|what about|how about|really|explain)\b", re.I)
 GREETING =re.compile(r"^\s*(hi|hello|hey|good (morning|afternoon|evening)|help|what can you do|who are you)\b[\s!.?]*$", re.I)
-ADVICE = re.compile(
-    r"\b(should i (buy|sell|invest|put|move)|what (stock|etf|fund)s? should i|tell me what to (buy|sell)|guarantee\w*|sure thing|best stock to buy|can i get rich)\b", re.I
-)
 
 
 @dataclass
@@ -96,8 +94,11 @@ def rule_route(query: str) -> RouteDecision:
 
 
 class Router:
-    def __init__(self, llm: LLMClient | None = None):
+    def __init__(self, llm: LLMClient | None = None, confident_score: int | None = 5):
         self.llm = llm or OfflineLLM()
+        # Token saver: when every agent the rules picked scores at least this, skip the LLM routing call.
+        # ``None`` disables the shortcut (always ask the LLM when one is available).
+        self.confident_score = confident_score
 
     def route(self, query: str, history: list[tuple[str, str]] | None = None) -> RouteDecision:
         text = query.strip()
@@ -105,7 +106,7 @@ class Router:
             return RouteDecision(greeting=True)
         if GREETING.match(text):
             return RouteDecision(greeting=True)
-        advice = bool(ADVICE.search(text))
+        advice = is_advice_request(text)  # guardrail: see src/core/guardrails.py
         decision = rule_route(text)
         if not FINANCE_WORDS.search(text) and not extract_tickers(text) and not parse_holdings(text):
             # Only a short message with a follow-up cue ("why is that?", "and for tesla?") inherits context.
@@ -113,7 +114,7 @@ class Router:
                 return RouteDecision(off_topic=True, advice_request=advice)
             decision.method = "context"
             decision.intents = self._follow_up(history) or ["finance_qa"]
-        elif self.llm.available:
+        elif self.llm.available and not self._rules_confident(decision):
             llm_intents = self._llm_route(text, history or [])
             if llm_intents:
                 decision.intents, decision.method = sorted(llm_intents, key=AGENT_ORDER.index), "llm"
@@ -122,6 +123,11 @@ class Router:
             # "Should I buy X?" can't be answered with advice, but current data on X is useful context.
             decision.intents = sorted([*decision.intents[: MAX_AGENTS - 1], "market_analysis"], key=AGENT_ORDER.index)
         return decision
+
+    def _rules_confident(self, decision: RouteDecision) -> bool:
+        if self.confident_score is None or not decision.intents:
+            return False
+        return all(decision.scores.get(a, 0) >= self.confident_score for a in decision.intents)
 
     @staticmethod
     def _follow_up(history: list[tuple[str, str]]) -> list[str]:
