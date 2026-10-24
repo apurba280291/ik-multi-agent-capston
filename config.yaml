@@ -1,0 +1,45 @@
+app:
+  name: Finnie - AI Finance Assistant
+  max_history_turns: 20
+
+llm:
+  # auto | anthropic | gemini | openai | offline
+  # "auto" picks the first provider whose API key is set, else "offline"
+  # (agents then return their deterministic, fully grounded drafts).
+  provider: auto
+  anthropic_model: claude-sonnet-5-5
+  gemini_model: gemini-2.0-flash
+  openai_model: gpt-4o-mini
+  temperature: 0.2
+  max_tokens: 900
+  requests_per_minute: 50
+  # Token savers
+  routing_confident_score: 5      # skip the LLM routing call when keyword rules score >= this (0 = always ask the LLM)
+  polish_max_chars: 6000          # drafts longer than this are returned as-is, no LLM rewrite (0 = no limit)
+  polish_cache_ttl_seconds: 3600  # reuse the rewrite when the same agent gets an identical query + draft
+
+market:
+  # yfinance | alpha_vantage | mock
+  provider: yfinance
+  cache_ttl_seconds: 1800
+  retries: 3
+  backoff_base_seconds: 0.5
+  timeout_seconds: 10
+  indices:
+    SPY: S&P 500
+    QQQ: Nasdaq 100
+    DIA: Dow Jones
+    IWM: Russell 2000
+    AGG: US Bonds
+    GLD: Gold
+
+rag:
+  knowledge_base_dir: src/data/knowledge_base
+  glossary_file: src/data/glossary.json
+  chunk_words: 140
+  chunk_overlap_words: 30
+  top_k: 4
+  min_score: 0.05
+
+logging:
+  level: INFO

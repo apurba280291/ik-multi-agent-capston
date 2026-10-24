@@ -1,0 +1,21 @@
+{
+  "_note": "ILLUSTRATIVE sample prices used only when live data is unavailable or provider=mock. Not real quotes.",
+  "SPY": {"price": 600.0, "prev_close": 596.0}, "VOO": {"price": 552.0, "prev_close": 548.5},
+  "VTI": {"price": 300.0, "prev_close": 298.2}, "QQQ": {"price": 520.0, "prev_close": 515.0},
+  "IWM": {"price": 225.0, "prev_close": 226.0}, "DIA": {"price": 435.0, "prev_close": 433.0},
+  "SCHD": {"price": 28.0, "prev_close": 27.9}, "VXUS": {"price": 68.0, "prev_close": 67.6},
+  "VEA": {"price": 56.0, "prev_close": 55.7}, "VWO": {"price": 50.0, "prev_close": 50.2},
+  "VT": {"price": 125.0, "prev_close": 124.3}, "BND": {"price": 73.0, "prev_close": 73.1},
+  "AGG": {"price": 99.0, "prev_close": 99.2}, "TLT": {"price": 88.0, "prev_close": 88.6},
+  "SHY": {"price": 82.5, "prev_close": 82.5}, "VNQ": {"price": 90.0, "prev_close": 89.4},
+  "GLD": {"price": 300.0, "prev_close": 297.0}, "BTC-USD": {"price": 95000.0, "prev_close": 93500.0},
+  "AAPL": {"price": 230.0, "prev_close": 228.0}, "MSFT": {"price": 450.0, "prev_close": 446.0},
+  "GOOGL": {"price": 185.0, "prev_close": 184.0}, "AMZN": {"price": 210.0, "prev_close": 207.5},
+  "NVDA": {"price": 140.0, "prev_close": 137.0}, "META": {"price": 600.0, "prev_close": 596.0},
+  "TSLA": {"price": 330.0, "prev_close": 322.0}, "JPM": {"price": 245.0, "prev_close": 244.0},
+  "V": {"price": 320.0, "prev_close": 319.0}, "JNJ": {"price": 155.0, "prev_close": 155.5},
+  "XOM": {"price": 110.0, "prev_close": 109.0}, "KO": {"price": 62.0, "prev_close": 62.2},
+  "PG": {"price": 170.0, "prev_close": 169.5}, "WMT": {"price": 95.0, "prev_close": 94.4},
+  "DIS": {"price": 110.0, "prev_close": 109.0}, "NFLX": {"price": 900.0, "prev_close": 890.0},
+  "BRK-B": {"price": 470.0, "prev_close": 468.0}
+}

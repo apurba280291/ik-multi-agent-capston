@@ -1,0 +1,7 @@
+flowchart LR
+    IN["query + AgentContext<br/>profile · portfolio · history · shared"] --> G["Gather facts<br/>RAG / market data / math"]
+    G --> T["Deterministic grounded answer"]
+    T --> L{LLM key set?}
+    L -- yes --> RW["LLM rewrites conversationally"]
+    L -- no --> OUT
+    RW --> OUT["AgentResponse<br/>content · sources · data"]
