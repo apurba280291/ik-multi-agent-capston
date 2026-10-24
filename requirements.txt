@@ -1,0 +1,21 @@
+langgraph>=0.2
+langchain-core>=0.3
+streamlit>=1.35
+plotly>=5.20
+pandas>=2.0
+numpy>=1.26
+scikit-learn>=1.4
+faiss-cpu>=1.8
+yfinance>=0.2.40
+requests>=2.31
+pyyaml>=6.0
+mcp>=1.2  # supports both 1.x (FastMCP) and 2.x (MCPServer)
+
+# LLM providers - install the one you use (all optional; app runs offline without them)
+anthropic>=0.40
+# google-genai>=1.0
+# openai>=1.40
+
+# Dev / test
+pytest>=8.0
+pytest-cov>=5.0

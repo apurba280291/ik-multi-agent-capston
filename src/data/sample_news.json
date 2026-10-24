@@ -1,0 +1,11 @@
+{
+  "_note": "SAMPLE headlines for offline demos; not real news.",
+  "general": [
+    {"title": "Stocks rise as investors expect interest rates to ease", "publisher": "Sample Wire", "summary": "Broad indexes advanced as traders priced in lower borrowing costs."},
+    {"title": "Inflation cools slightly, easing pressure on central bank", "publisher": "Sample Wire", "summary": "Consumer prices rose at a slower pace than the prior month."},
+    {"title": "Tech earnings beat estimates, lifting growth shares", "publisher": "Sample Wire", "summary": "Strong cloud and AI demand boosted several large technology companies."},
+    {"title": "Oil prices fall on supply concerns easing", "publisher": "Sample Wire", "summary": "Energy shares slipped as crude declined."},
+    {"title": "Bond yields drop, boosting bond fund prices", "publisher": "Sample Wire", "summary": "Treasury yields fell as economic data softened."},
+    {"title": "Retail sales weaker than expected, raising growth worries", "publisher": "Sample Wire", "summary": "Consumer spending slowed, prompting caution among investors."}
+  ]
+}

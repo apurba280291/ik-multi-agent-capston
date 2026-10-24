@@ -1,0 +1,23 @@
+{
+  "Balanced Beginner": [
+    {"symbol": "VTI", "shares": 40},
+    {"symbol": "VXUS", "shares": 60},
+    {"symbol": "BND", "shares": 50}
+  ],
+  "Tech-Heavy Concentrated": [
+    {"symbol": "AAPL", "shares": 60},
+    {"symbol": "MSFT", "shares": 30},
+    {"symbol": "NVDA", "shares": 80},
+    {"symbol": "TSLA", "shares": 25},
+    {"symbol": "QQQ", "shares": 20}
+  ],
+  "Conservative Income": [
+    {"symbol": "BND", "shares": 120},
+    {"symbol": "SCHD", "shares": 80},
+    {"symbol": "VOO", "shares": 10},
+    {"symbol": "CASH", "shares": 3000}
+  ],
+  "Single Stock (Risky)": [
+    {"symbol": "TSLA", "shares": 100}
+  ]
+}

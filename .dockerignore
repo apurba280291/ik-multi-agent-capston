@@ -1,0 +1,9 @@
+.git
+.env
+__pycache__
+.pytest_cache
+.coverage
+tests
+AI_Finance_Assistant_Problem_Statement.md
+AI_Finance_Assistant_Project_Milestones.md
+Grading_Rubric_AI_Finance_Assistant.md
