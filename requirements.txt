@@ -16,6 +16,9 @@ anthropic>=0.40
 # google-genai>=1.0
 # openai>=1.40
 
+# Optional neural embeddings for semantic search (rag.embedder: sentence_transformers)
+# sentence-transformers>=3.0
+
 # Dev / test
 pytest>=8.0
 pytest-cov>=5.0

@@ -1,0 +1,29 @@
+{
+  "description": "Labelled routing set: which agent(s) should handle each message. Used by scripts/eval_routing.py (keyword rules, offline).",
+  "queries": [
+    {"q": "What is an ETF?", "expected": ["finance_qa"]},
+    {"q": "Explain compound interest", "expected": ["finance_qa"]},
+    {"q": "What is the difference between a stock and a bond?", "expected": ["finance_qa"]},
+    {"q": "How is NVDA doing?", "expected": ["market_analysis"]},
+    {"q": "What is the price of AAPL?", "expected": ["market_analysis"]},
+    {"q": "How is the market today?", "expected": ["market_analysis"]},
+    {"q": "I own 10 VTI, 20 AAPL and $2,000 in BND. Analyze my portfolio", "expected": ["portfolio_analysis"]},
+    {"q": "Is my portfolio diversified? I hold 50 shares of SPY", "expected": ["portfolio_analysis"]},
+    {"q": "I want $50,000 in 8 years, have $5,000, save $300/month", "expected": ["goal_planning"]},
+    {"q": "How much should I save monthly to reach $100,000 in 10 years?", "expected": ["goal_planning"]},
+    {"q": "Latest news on Tesla", "expected": ["news_synthesizer"]},
+    {"q": "What happened to the stock market this week? Summarize the news", "expected": ["news_synthesizer"]},
+    {"q": "Roth vs traditional IRA", "expected": ["tax_education"]},
+    {"q": "How does a 401(k) match work?", "expected": ["tax_education"]},
+    {"q": "How are capital gains taxed?", "expected": ["tax_education"]},
+    {"q": "What is an HSA and how is it taxed?", "expected": ["tax_education"]},
+    {"q": "I own 10 VTI and 5 BND. Analyze my portfolio and plan $100,000 in 10 years", "expected": ["portfolio_analysis", "goal_planning"]},
+    {"q": "Latest news on NVDA and how is the stock doing?", "expected": ["market_analysis", "news_synthesizer"]},
+    {"q": "Explain what a Roth IRA is and how much I should save monthly for $500,000 in 25 years", "expected": ["tax_education", "goal_planning"]},
+    {"q": "What does the price to earnings ratio mean?", "expected": ["finance_qa"]},
+    {"q": "Show me the trend for MSFT over the last 6 months", "expected": ["market_analysis"]},
+    {"q": "Why is Tesla down today?", "expected": ["news_synthesizer"]},
+    {"q": "Plan for retirement: I am 30, have $20,000 and can save $500 per month", "expected": ["goal_planning"]},
+    {"q": "What are tax brackets?", "expected": ["tax_education"]}
+  ]
+}

@@ -52,7 +52,7 @@ RULES: dict[str, list[tuple[str, int]]] = {
 FINANCE_WORDS = re.compile(
     r"\b(invest\w*|stock\w*|bonds?|funds?|etfs?|money|financ\w*|sav(e|ing|ings)|retire\w*|tax\w*|market\w*|portfolio|loans?|debt|budget\w*|"
     r"inflation|interest|dividends?|crypto\w*|bitcoin|mortgage|credit|income|wealth|asset\w*|broker\w*|risk|diversif\w*|compound|"
-    r"401k|ira|roth|hsa|529|equity|shares?|yield|price|rates?|economy|fed)\b",
+    r"401k|ira|roth|hsa|529|equity|shares?|yield|price|rates?|economy|fed)\b|401\s?\(\s?k\s?\)|403\s?\(\s?b\s?\)",
     re.I,
 )
 FOLLOW_UP = re.compile(r"\b(it|that|this|them|those|these|why|how come|more|and|also|then|what about|how about|really|explain)\b", re.I)

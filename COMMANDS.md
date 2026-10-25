@@ -50,11 +50,24 @@ python -c "from src.workflow.assistant import FinanceAssistant; r=FinanceAssista
 ## 4. Test and benchmark
 
 ```powershell
-python -m pytest -q                        # 199 tests, offline (mock data, no keys needed)
-python -m pytest --cov=src -q              # with coverage (~96%)
+python -m pytest -q                        # 214 tests, offline (mock data, no keys needed)
+python -m pytest --cov=src -q              # with coverage (~95%)
 python -m pytest tests/test_guardrails.py -v
 python scripts/benchmark.py                # latency benchmarks
 ```
+
+## 4b. RAG and routing evals
+
+```powershell
+python scripts/eval_retrieval.py                       # hit@1, hit@3, MRR, precision@3, no-answer rate, ms/query
+python scripts/eval_retrieval.py --misses              # also list the queries that failed
+python scripts/eval_retrieval.py --compare             # tfidf vs sentence_transformers vs openai, flat vs hnsw
+python scripts/eval_retrieval.py --embedder openai --index hnsw --chunking fixed -k 5
+python scripts/eval_retrieval.py --min-hit 0.8         # exit 1 below this hit@k (CI gate)
+python scripts/eval_routing.py --misses                # router exact match / agent recall / agent precision
+```
+
+Switch the retrieval back end in `config.yaml` (`rag.embedder`, `rag.index_type`, `rag.chunk_strategy`) or per run with the flags above. Neural embeddings: `pip install sentence-transformers` and set `rag.embedder: sentence_transformers` (or `openai` with `OPENAI_API_KEY`; its token use is logged under caller `embeddings`).
 
 ## 5. Check logging
 

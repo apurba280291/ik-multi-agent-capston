@@ -49,6 +49,24 @@ Docker: `docker compose up --build` (not exercised in the development environmen
 
 Details and design rationale: [docs/DESIGN.md](docs/DESIGN.md). Architecture, request-flow and per-agent diagrams (Mermaid source plus SVG/PNG): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+### RAG: chunking, embeddings, search, evals
+
+| Piece | What the project does |
+|---|---|
+| Chunking | `fixed` sliding windows or `recursive` splitting (paragraph > line > sentence > word, then overlap). **Note:** every article in this knowledge base is under 90 words, below the 140-word chunk size, so both strategies currently produce identical chunks; the strategies matter once longer documents are added |
+| Embeddings | Pluggable (`src/rag/embedders.py`): TF-IDF (lexical, default), sentence-transformers or OpenAI (neural). Vectors are L2-normalised, so inner product is cosine similarity |
+| Search | Cosine similarity over a FAISS index, then a score floor, one chunk per article, optional category filter |
+| Index | `flat` = exact brute force (right for ~130 chunks). `hnsw` = FAISS HNSW graph index; on this corpus it returns the same results as `flat`, so it only pays off at thousands of chunks |
+| Evals | `evals/retrieval_eval.json` (44 labelled queries: direct, paraphrase, out-of-scope) and `evals/routing_eval.json` (24 queries) |
+
+```powershell
+python scripts/eval_retrieval.py --misses       # hit@1, hit@3, MRR, precision@3, no-answer rate, latency + the failures
+python scripts/eval_retrieval.py --compare      # tfidf vs sentence_transformers vs openai, flat vs hnsw (skips what is not installed)
+python scripts/eval_routing.py --misses         # exact match / agent recall / agent precision of the keyword router
+```
+
+Measured with the default TF-IDF embedder (k=3): **direct queries hit@3 100%** (MRR 0.89), **paraphrase queries hit@3 42%** (MRR 0.38), and 2 of 4 out-of-scope queries wrongly return hits ("capital of france" matches *Capital Gains*; their scores overlap with weak true hits, so `min_score` cannot fix it). That gap is the lexical-embedding limitation: set `rag.embedder` to a neural model and re-run `--compare` to measure the improvement (the neural back ends could not be run here, so their numbers are not measured). Routing: exact match 79%, agent recall 96%, agent precision 84%; the misses are mostly `finance_qa` being added next to another agent on "what is..." questions (by design) and "price to earnings" routing to the market agent. `pytest` guards these as quality floors.
+
 ### Guardrails
 
 All in [src/core/guardrails.py](src/core/guardrails.py) except the topic filter, which lives in the router:
@@ -71,13 +89,14 @@ src/
   agents/      six agents (finance_qa, portfolio_agent, market_agent, goal_agent, news_agent, tax_education)
   core/        BaseAgent, LLM clients, models, config, guardrails, finance_math, portfolio_analysis, goal_planner
   data/        market_data.py (providers + cache + fallbacks), assets.py, knowledge_base/*.md, glossary.json, samples
-  rag/         documents (load/chunk), retriever (TF-IDF embeddings), vector_store (FAISS / NumPy)
+  rag/         documents (load + fixed/recursive chunking), embedders (TF-IDF / sentence-transformers / OpenAI), retriever, vector_store (FAISS flat / HNSW / NumPy), evaluation (metrics)
   workflow/    router.py, graph.py (LangGraph), assistant.py (facade)
   web_app/     app.py (Streamlit), charts.py (Plotly)
   mcp_server/  server.py (Claude Desktop integration)
   utils/       cache, retry/backoff, rate limiter, parsing, formatting, logging, call_log, usage_log
 docs/          DESIGN.md, IMPLEMENTATION_FLOW.md, ARCHITECTURE.md, diagrams/
-tests/         199 tests    scripts/ (benchmark, agent_stats, token_usage)    config.yaml    Dockerfile
+evals/         labelled retrieval and routing sets
+tests/         214 tests    scripts/ (benchmark, eval_retrieval, eval_routing, agent_stats, token_usage)    config.yaml    Dockerfile
 ```
 
 ## What each agent does
@@ -107,7 +126,10 @@ Multi-intent messages run several agents in order, e.g. *"Analyze my portfolio a
 | `market.provider` | `yfinance`, `alpha_vantage`, `mock` |
 | `market.cache_ttl_seconds` / `retries` / `backoff_base_seconds` | 30-minute TTL cache, exponential backoff. `retries` is the number of attempts and is capped at 5 (single backoff sleep capped at 30 s) |
 | `market.indices` | Tickers shown in the market overview |
-| `rag.*` | Knowledge-base paths, chunk size/overlap, `top_k`, `min_score` |
+| `rag.chunk_strategy` | `recursive` (paragraph > sentence > word boundaries, default) or `fixed` (sliding word windows) |
+| `rag.embedder` | `tfidf` (default, no key), `sentence_transformers` (`pip install sentence-transformers`) or `openai` (`OPENAI_API_KEY`); an unavailable back end falls back to TF-IDF with a warning |
+| `rag.index_type` | `flat` (exact, default) or `hnsw` (approximate graph index; `hnsw_m`, `hnsw_ef_construction`, `hnsw_ef_search`) |
+| `rag.*` (other) | Knowledge-base paths, chunk size/overlap, `top_k`, `min_score` |
 
 Environment overrides: `FINANCE_LLM_PROVIDER`, `FINANCE_MARKET_PROVIDER`, `FINANCE_CONFIG`, `FINANCE_LOG_DIR` (default `logs/`), `FINANCE_CALL_LOG=off` (disable the call/token logs).
 
@@ -171,11 +193,11 @@ Works with `mcp` 1.x (`FastMCP`) and 2.x (`MCPServer`). The server is stdio-base
 ## Testing
 
 ```bash
-python -m pytest --cov            # 199 tests, ~96% line coverage (offline: mock market data, no API keys)
+python -m pytest --cov            # 214 tests, ~95% line coverage (offline: mock market data, no API keys)
 python scripts/benchmark.py       # latency benchmarks
 ```
 
-Tests cover each agent, routing (rules, LLM path, follow-ups, off-topic, advice), guardrails (injection, PII, advice, rewrite validation), the call/token logs and token savers, the retry cap, the graph (multi-agent hand-off, session isolation, history trimming, failure containment), RAG relevance and filters, market-data fallbacks (retry/backoff, rate limits, stale cache, mock), finance math, parsing edge cases, the Streamlit app (`streamlit.testing`), and the MCP tools. The Anthropic / Gemini / OpenAI client classes themselves are not exercised (they need keys); the shared retry/error wrapper is.
+Tests cover each agent, routing (rules, LLM path, follow-ups, off-topic, advice), guardrails (injection, PII, advice, rewrite validation), the call/token logs and token savers, the retry cap, chunking strategies, the HNSW index, pluggable embedders, the eval metrics and quality floors, the graph (multi-agent hand-off, session isolation, history trimming, failure containment), RAG relevance and filters, market-data fallbacks (retry/backoff, rate limits, stale cache, mock), finance math, parsing edge cases, the Streamlit app (`streamlit.testing`), and the MCP tools. The Anthropic / Gemini / OpenAI client classes themselves are not exercised (they need keys); the shared retry/error wrapper is.
 
 ### Benchmarks (this machine: offline LLM, mock market data)
 
@@ -205,7 +227,7 @@ With an LLM enabled, each agent in a turn adds one provider round-trip (cache hi
 
 ## Known limitations
 
-- **Embeddings are TF-IDF**, not neural. They are fast, key-free and good on this vocabulary, but they miss paraphrases with no word overlap. The `Retriever` is the only place to swap in a neural embedder.
+- **Default embeddings are TF-IDF**, not neural: fast, key-free and good on this vocabulary, but they miss paraphrases with no word overlap (paraphrase hit@3 is 42%). Neural back ends (`sentence_transformers`, `openai`) are implemented behind `rag.embedder` but were not run here, so their quality is unmeasured. The eval sets are small (44 retrieval / 24 routing queries), so treat the percentages as indicative.
 - **Knowledge-base content was written for this project**, not scraped from the cited sites; `reference` links point to the relevant authoritative site section for further reading. Tax limits quoted are labelled as tax-year 2025 and should be verified.
 - **Projections** use fixed illustrative return/volatility assumptions by risk level (4.5-8% / 6-16%); they are not forecasts. The stress-test shocks and asset-class risk scores are rough teaching heuristics.
 - **Asset classification** covers ~40 common tickers; unknown tickers are treated as individual stocks in an "Unclassified" sector (flagged).

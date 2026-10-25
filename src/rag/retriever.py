@@ -1,23 +1,27 @@
 """Embedding + retrieval pipeline with relevance scoring, category filters and attribution.
 
-Embeddings are TF-IDF vectors (unigrams + bigrams, sublinear tf) so the system needs
-no embedding API key and builds in milliseconds; the vector store interface is
-embedder-agnostic if you want to swap in a neural embedding model.
+The embedder is pluggable (``rag.embedder``): TF-IDF by default (no key, builds in milliseconds), or a neural
+model for true semantic search. The index is FAISS ``flat`` (exact) or ``hnsw`` (approximate), set by
+``rag.index_type``; see ``src/rag/embedders.py`` and ``src/rag/vector_store.py``.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
 
 from src.core.config import Settings
 from src.core.models import Source
 from src.rag.documents import Chunk, build_chunks, load_articles, load_glossary
+from src.rag.embedders import Embedder, TfidfEmbedder, create_embedder
 from src.rag.vector_store import VectorStore
 from src.utils.logging_utils import get_logger
 
 log = get_logger(__name__)
+
+# With an approximate index, fetch this many candidates per wanted result before filtering (min FETCH_FLOOR).
+OVERSAMPLE = 10
+FETCH_FLOOR = 50
 
 
 @dataclass
@@ -33,11 +37,21 @@ class RetrievedChunk:
 
 
 class Retriever:
-    def __init__(self, chunks: list[Chunk], top_k: int = 4, min_score: float = 0.05):
+    def __init__(
+        self,
+        chunks: list[Chunk],
+        top_k: int = 4,
+        min_score: float = 0.05,
+        embedder: Embedder | None = None,
+        index_type: str = "flat",
+        index_options: dict | None = None,
+    ):
         self.chunks = chunks
         self.top_k = top_k
         self.min_score = min_score
-        self._vectorizer: TfidfVectorizer | None = None
+        self.embedder: Embedder = embedder or TfidfEmbedder()
+        self.index_type = index_type
+        self._index_options = index_options or {}
         self._store: VectorStore | None = None
         if chunks:
             self._build()
@@ -51,16 +65,31 @@ class Retriever:
             docs,
             int(settings.get("rag.chunk_words", 140)),
             int(settings.get("rag.chunk_overlap_words", 30)),
+            str(settings.get("rag.chunk_strategy", "recursive")),
         )
         log.info("knowledge base: %d documents -> %d chunks", len(docs), len(chunks))
-        return cls(chunks, int(settings.get("rag.top_k", 4)), float(settings.get("rag.min_score", 0.05)))
+        return cls(
+            chunks,
+            int(settings.get("rag.top_k", 4)),
+            float(settings.get("rag.min_score", 0.05)),
+            embedder=create_embedder(settings),
+            index_type=str(settings.get("rag.index_type", "flat")).lower(),
+            index_options={
+                "hnsw_m": int(settings.get("rag.hnsw_m", 32)),
+                "ef_construction": int(settings.get("rag.hnsw_ef_construction", 200)),
+                "ef_search": int(settings.get("rag.hnsw_ef_search", 64)),
+            },
+        )
 
     def _build(self) -> None:
         # Titles are repeated so they weigh more than body text.
         corpus = [f"{c.title}. {c.title}. {c.text}" for c in self.chunks]
-        self._vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), sublinear_tf=True)
-        matrix = self._vectorizer.fit_transform(corpus).toarray().astype("float32")
-        self._store = VectorStore(matrix.shape[1])
+        matrix = self.embedder.fit_transform(corpus)
+        try:
+            self._store = VectorStore(matrix.shape[1], index_type=self.index_type, **self._index_options)
+        except ValueError as exc:
+            log.warning("%s; using flat index", exc)
+            self._store = VectorStore(matrix.shape[1])
         self._store.add(matrix)
 
     @property
@@ -83,16 +112,25 @@ class Retriever:
         min_score: float | None = None,
     ) -> list[RetrievedChunk]:
         """Top-k chunks (one per article) above ``min_score``, optionally within categories."""
-        if not query.strip() or self._store is None or self._vectorizer is None:
+        if not query.strip() or self._store is None:
             return []
         k = k or self.top_k
         floor = self.min_score if min_score is None else min_score
         allowed = {category} if isinstance(category, str) else set(category or [])
-        qvec = self._vectorizer.transform([query]).toarray().astype("float32")
+        qvec = self.embedder.encode_query(query)
         if not np.any(qvec):
             return []
-        # Corpus is small, so rank everything then filter; avoids missing in-category hits.
-        ranked = self._store.search(qvec[0], len(self.chunks))
+        total = len(self.chunks)
+        # Exact index: the corpus is small, so rank everything then filter (avoids missing in-category hits).
+        # Approximate index: fetch a generous candidate pool, and widen to everything if filtering leaves too few.
+        fetch = min(total, max(k * OVERSAMPLE, FETCH_FLOOR)) if self._store.approximate else total
+        while True:
+            results = self._collect(self._store.search(qvec, fetch), k, floor, allowed)
+            if len(results) >= k or fetch >= total:
+                return results
+            fetch = total
+
+    def _collect(self, ranked: list[tuple[int, float]], k: int, floor: float, allowed: set[str]) -> list[RetrievedChunk]:
         results: list[RetrievedChunk] = []
         seen: set[str] = set()
         for idx, score in ranked:

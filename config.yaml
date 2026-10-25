@@ -36,8 +36,16 @@ market:
 rag:
   knowledge_base_dir: src/data/knowledge_base
   glossary_file: src/data/glossary.json
+  chunk_strategy: recursive   # recursive (paragraph > sentence > word boundaries) | fixed (sliding word windows)
   chunk_words: 140
   chunk_overlap_words: 30
+  embedder: tfidf             # tfidf | sentence_transformers (pip install sentence-transformers) | openai (needs OPENAI_API_KEY)
+  sentence_transformers_model: sentence-transformers/all-MiniLM-L6-v2
+  openai_embedding_model: text-embedding-3-small
+  index_type: flat            # flat (exact) | hnsw (approximate graph index; pays off at thousands of chunks)
+  hnsw_m: 32                  # HNSW: links per node
+  hnsw_ef_construction: 200   # HNSW: build-time search breadth
+  hnsw_ef_search: 64          # HNSW: query-time search breadth (higher = better recall, slower)
   top_k: 4
   min_score: 0.05
 
