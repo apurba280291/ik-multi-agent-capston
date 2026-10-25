@@ -36,10 +36,15 @@ market:
 rag:
   knowledge_base_dir: src/data/knowledge_base
   glossary_file: src/data/glossary.json
+  pdf_dir: src/data/pdfs      # PDFs here are indexed page by page (sub-folder name = category); "" disables. Needs: pip install pypdf
+  pdf_cache_dir: .cache/pdf_text
+  embedding_cache_dir: .cache/embeddings   # neural corpus embeddings are reused while the model and texts are unchanged ("" disables)
   chunk_strategy: recursive   # recursive (paragraph > sentence > word boundaries) | fixed (sliding word windows)
   chunk_words: 140
   chunk_overlap_words: 30
-  embedder: tfidf             # tfidf | sentence_transformers (pip install sentence-transformers) | openai (needs OPENAI_API_KEY)
+  embedder: hybrid            # hybrid (meaning + exact words) | tfidf | sentence_transformers | openai. hybrid needs: pip install sentence-transformers; without it, it falls back to tfidf
+  hybrid_semantic: sentence_transformers   # the 'meaning' half of hybrid: sentence_transformers | openai
+  hybrid_lexical_weight: 0.5  # weight of exact-word (TF-IDF) scores vs semantic ones. TF-IDF scores run about half the size of neural ones, so 0.5 still lets meaning dominate; swept 0.3-0.7 on the evals
   sentence_transformers_model: sentence-transformers/all-MiniLM-L6-v2
   openai_embedding_model: text-embedding-3-small
   index_type: flat            # flat (exact) | hnsw (approximate graph index; pays off at thousands of chunks)
@@ -47,7 +52,10 @@ rag:
   hnsw_ef_construction: 200   # HNSW: build-time search breadth
   hnsw_ef_search: 64          # HNSW: query-time search breadth (higher = better recall, slower)
   top_k: 4
-  min_score: 0.05
+  min_score: 0.05          # score floor for the TF-IDF embedder
+  router_rescue_score: 0.30   # a question with no finance keyword is still answered if the knowledge base matches it at least this well (neural/hybrid only; off-topic questions scored <= 0.27 in the eval)
+  hybrid_min_score: 0.15   # floor for the blended hybrid score: every correct hit scored >= 0.20, 3 of 4 off-topic queries < 0.10 (calibrate: python scripts/eval_retrieval.py --calibrate)
+  neural_min_score: 0.30   # floor for neural embedders; measured for all-MiniLM-L6-v2 (off-topic max 0.28, weakest correct hit 0.34). Re-calibrate: python scripts/eval_retrieval.py --calibrate
 
 logging:
   level: INFO

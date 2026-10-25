@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from src.core.config import Settings
+from src.core.config import PROJECT_ROOT, Settings, load_settings
 from src.rag.documents import Document, build_chunks, chunk_document_recursive, recursive_split
 from src.rag.embedders import Embedder, TfidfEmbedder, create_embedder
 from src.rag.evaluation import RetrievalReport, evaluate_retrieval, evaluate_routing, load_queries
@@ -151,7 +151,7 @@ def test_routing_metrics():
 def test_eval_sets_are_well_formed(retriever):
     titles = {c.title.lower() for c in retriever.chunks}
     for item in load_queries("retrieval_eval.json"):
-        assert item["kind"] in {"direct", "paraphrase", "out_of_scope"}
+        assert item["kind"] in {"direct", "paraphrase", "exact", "out_of_scope"}
         assert bool(item["expected"]) == (item["kind"] != "out_of_scope")
         assert all(t.lower() in titles for t in item["expected"]), item  # labels must name real articles
     agents = {"market_analysis", "news_synthesizer", "portfolio_analysis", "goal_planning", "tax_education", "finance_qa"}
@@ -174,3 +174,58 @@ def test_routing_quality_floor():
 def test_401k_with_parentheses_is_not_off_topic():
     d = Router().route("How does a 401(k) match work?")
     assert not d.off_topic and "tax_education" in d.intents
+
+
+# --- neural score floor and calibration ---------------------------------------------------------------
+def test_neural_embedders_get_their_own_score_floor(monkeypatch):
+    from src.rag import retriever as retriever_mod
+
+    base = {"knowledge_base_dir": "src/data/knowledge_base", "glossary_file": "src/data/glossary.json", "pdf_dir": ""}
+    tfidf = Retriever.from_settings(Settings({"rag": {**base, "min_score": 0.07}}))
+    assert tfidf.min_score == 0.07
+    monkeypatch.setattr(retriever_mod, "create_channels", lambda s: (BagOfLettersEmbedder(), None, 0.0))
+    neural = Retriever.from_settings(Settings({"rag": {**base, "min_score": 0.07}}))
+    assert neural.min_score == 0.30  # default neural floor
+    neural = Retriever.from_settings(Settings({"rag": {**base, "neural_min_score": 0.5}}))
+    assert neural.min_score == 0.5
+    monkeypatch.setattr(retriever_mod, "create_channels", lambda s: (BagOfLettersEmbedder(), TfidfEmbedder(), 0.5))
+    hybrid = Retriever.from_settings(Settings({"rag": {**base, "hybrid_min_score": 0.11}}))
+    assert hybrid.min_score == 0.11 and hybrid.mode == "hybrid"
+
+
+def test_calibrate_floor_finds_gap_or_reports_overlap():
+    from src.rag.evaluation import calibrate_floor
+
+    class Scored:
+        def __init__(self, table):
+            self.table = table
+
+        def search(self, q, k=3, min_score=0.0):
+            class H:
+                def __init__(self, title, score):
+                    self.title, self.score = title, score
+
+            return [H(t, s) for t, s in self.table.get(q, [])]
+
+    queries = [
+        {"q": "a", "expected": ["X"], "kind": "direct"},
+        {"q": "b", "expected": ["Y"], "kind": "direct"},
+        {"q": "c", "expected": [], "kind": "out_of_scope"},
+    ]
+    gap = calibrate_floor(Scored({"a": [("X", 0.6)], "b": [("o", 0.5), ("Y", 0.4)], "c": [("z", 0.2)]}), queries)
+    assert gap.separable and gap.suggested_floor == pytest.approx(0.3) and gap.relevant == [0.4, 0.6]
+    overlap = calibrate_floor(Scored({"a": [("X", 0.3)], "b": [("Y", 0.4)], "c": [("z", 0.35)]}), queries)
+    assert not overlap.separable
+
+
+def test_neural_retrieval_floor_if_sentence_transformers_available():
+    pytest.importorskip("sentence_transformers")
+    cfg = load_settings()
+    cfg.set("rag.pdf_dir", "")
+    cfg.set("rag.embedder", "sentence_transformers")
+    r = Retriever.from_settings(cfg)
+    if r.embedder.name != "sentence_transformers":
+        pytest.skip("model could not be loaded (offline?)")
+    rep = evaluate_retrieval(r, load_queries("retrieval_eval.json"), k=3)
+    assert rep.hit_at_k >= 0.85 and rep.by_kind["paraphrase"]["hit@3"] >= 0.6  # TF-IDF: 0.82 / 0.42
+    assert rep.no_answer_rate >= 0.75  # TF-IDF: 0.50

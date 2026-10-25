@@ -9,6 +9,7 @@ faiss-cpu>=1.8
 yfinance>=0.2.40
 requests>=2.31
 pyyaml>=6.0
+pypdf>=4.0  # reads PDFs placed under rag.pdf_dir (optional: PDFs are skipped if missing)
 mcp>=1.2  # supports both 1.x (FastMCP) and 2.x (MCPServer)
 
 # LLM providers - install the one you use (all optional; app runs offline without them)

@@ -68,7 +68,12 @@ class FinanceAssistant:
         }
         # Router decides which agent(s) handle a query (LLM classification, or keyword rules when offline).
         # `llm.routing_confident_score: 0` disables the "skip the LLM when rules are sure" shortcut.
-        self.router = Router(self.llm, int(self.settings.get("llm.routing_confident_score", 5)) or None)
+        self.router = Router(
+            self.llm,
+            int(self.settings.get("llm.routing_confident_score", 5)) or None,
+            retriever=self.retriever,
+            rescue_score=float(self.settings.get("rag.router_rescue_score", 0.30)),
+        )
         # Compile the LangGraph workflow: understand -> route -> agent(s) -> compose,
         # with conversation memory checkpointed per session_id. Last arg caps remembered chat turns.
         self.graph = build_graph(self.agents, self.router, int(self.settings.get("app.max_history_turns", 20)))

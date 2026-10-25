@@ -7,7 +7,7 @@ A walkthrough of what the agent can do and the exact commands to show it. Everyt
 Finnie is a multi-agent AI finance assistant that teaches beginners about investing.
 
 - **6 specialised agents** orchestrated by a **LangGraph** workflow (`understand -> route -> agents -> compose`)
-- **RAG** over a FAISS knowledge base (81 articles + 48 glossary terms) with source citations; recursive/fixed chunking, pluggable embeddings (TF-IDF default, neural optional), flat or HNSW index, and a labelled eval harness
+- **RAG** over a FAISS knowledge base (81 articles + 48 glossary terms) with source citations; recursive/fixed chunking, **hybrid search (semantic meaning + exact-word matching)** with a TF-IDF fallback, flat or HNSW index, **PDF ingestion with page-level citations** (sample: 62-page IRS Publication 590-A), and a labelled eval harness
 - **Live market data** (yfinance / Alpha Vantage) with cache, retry/backoff and graceful fallbacks
 - **Streamlit** UI, plus an **MCP server** so Claude Desktop can use the same tools
 - **Guardrails** (advice, prompt-injection, PII redaction, LLM-output validation) and a disclaimer on every answer; it never gives personalised advice
@@ -108,13 +108,15 @@ python scripts/token_usage.py --calls        # LLM input/output tokens per calle
 
 ```powershell
 python scripts/eval_retrieval.py --misses      # hit@1, hit@3, MRR, precision, no-answer rate; lists failed queries
-python scripts/eval_retrieval.py --compare     # tfidf vs neural (if installed) x flat vs hnsw
+python scripts/eval_retrieval.py --compare     # tfidf vs neural vs hybrid (if installed) x flat vs hnsw
+python scripts/eval_retrieval.py --set pdf_eval.json --misses   # questions answered by the indexed PDF (page-level hits)
+python scripts/eval_retrieval.py --no-pdf      # curated articles only
 python scripts/eval_routing.py --misses        # router exact match / recall / precision
 ```
 
 Say it honestly: TF-IDF gets 100% hit@3 on direct queries but 42% on paraphrases, which is why neural embeddings are pluggable. HNSW matches flat exactly here because the corpus is tiny.
 
-**Run the tests (214 tests, offline)**
+**Run the tests (236 tests, offline)**
 
 ```powershell
 python -m pytest
@@ -161,7 +163,8 @@ Note: the tools are unit-tested, but not verified inside Claude Desktop itself.
 
 - `llm.provider`: `auto` | `anthropic` | `gemini` | `openai` | `offline`
 - `market.provider`: `yfinance` | `alpha_vantage` | `mock`
-- `rag.*`: `chunk_strategy` (recursive | fixed), `embedder` (tfidf | sentence_transformers | openai), `index_type` (flat | hnsw), chunk size/overlap, `top_k`, `min_score`
+- `rag.pdf_dir`: PDFs under `src/data/pdfs/<category>/` are indexed page by page (`pip install pypdf`); `""` disables
+- `rag.*`: `chunk_strategy` (recursive | fixed), `embedder` (hybrid | tfidf | sentence_transformers | openai), `hybrid_lexical_weight`, `router_rescue_score`, `index_type` (flat | hnsw), chunk size/overlap, `top_k`, `min_score`
 - `llm.routing_confident_score` / `polish_max_chars` / `polish_cache_ttl_seconds`: token savers (skip LLM routing when rules are sure, skip oversized drafts, cache identical rewrites)
 - `market.retries`: attempts are capped at 5 and a single backoff sleep at 30 s
 - `FINANCE_LOG_DIR`, `FINANCE_CALL_LOG=off`: log folder / disable call and token logs
@@ -189,8 +192,9 @@ More detail: [docs/DESIGN.md](docs/DESIGN.md), [docs/IMPLEMENTATION_FLOW.md](doc
 
 ## 9. Known limitations (say these before they ask)
 
-- Default embeddings are TF-IDF, not neural; paraphrases with no word overlap are often missed (42% hit@3 in the eval). Neural back ends exist but were not run here
-- Every knowledge-base article is shorter than one chunk, so chunk strategy has no effect on current data; HNSW equals flat at this size
+- Search is hybrid (meaning + exact words) only when `sentence-transformers` is installed (PyTorch, ~hundreds of MB, model download); otherwise it degrades to keyword TF-IDF (paraphrase hit@3 42% vs 75%). Hybrid vs neural-only: better on rare identifiers (form numbers 100% vs 60%) but off-topic rejection is 75% vs 100%. Weights/floors were tuned on small eval sets. OpenAI embedder: implemented, not measured
+- Every curated article is shorter than one chunk, so chunk strategy has no effect on them; HNSW equals flat at this size
+- PDFs: text extraction only (no OCR); the 62-page IRS PDF gets hit@3 59% with TF-IDF, 71% neural-only and 82% hybrid, and with hybrid it no longer degrades the curated articles (94%). To demo: `python scripts/eval_retrieval.py --set pdf_eval.json --misses`
 - Knowledge-base content was written for this project; tax limits are labelled tax-year 2025
 - Projections use fixed illustrative return/volatility assumptions, not forecasts
 - Asset classification covers ~40 common tickers; others are flagged "Unclassified"

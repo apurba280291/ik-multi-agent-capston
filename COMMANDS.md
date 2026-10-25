@@ -12,6 +12,7 @@ pip install -r requirements.txt
 # If Activate.ps1 is blocked ("running scripts is disabled"), allow it for this window only:
 #   Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
+pip install pypdf                         # read PDFs placed under src/data/pdfs (already in requirements.txt)
 pip install openai                        # only if you use OpenAI   (anthropic is already in requirements)
 pip install google-genai                  # only if you use Gemini
 ```
@@ -50,7 +51,7 @@ python -c "from src.workflow.assistant import FinanceAssistant; r=FinanceAssista
 ## 4. Test and benchmark
 
 ```powershell
-python -m pytest -q                        # 214 tests, offline (mock data, no keys needed)
+python -m pytest -q                        # 236 tests, offline (mock data, no keys needed)
 python -m pytest --cov=src -q              # with coverage (~95%)
 python -m pytest tests/test_guardrails.py -v
 python scripts/benchmark.py                # latency benchmarks
@@ -62,12 +63,32 @@ python scripts/benchmark.py                # latency benchmarks
 python scripts/eval_retrieval.py                       # hit@1, hit@3, MRR, precision@3, no-answer rate, ms/query
 python scripts/eval_retrieval.py --misses              # also list the queries that failed
 python scripts/eval_retrieval.py --compare             # tfidf vs sentence_transformers vs openai, flat vs hnsw
+python scripts/eval_retrieval.py --set pdf_eval.json --misses   # questions answered by the indexed PDF (page-level hits)
+python scripts/eval_retrieval.py --no-pdf              # curated articles only (ignore PDFs)
 python scripts/eval_retrieval.py --embedder openai --index hnsw --chunking fixed -k 5
 python scripts/eval_retrieval.py --min-hit 0.8         # exit 1 below this hit@k (CI gate)
 python scripts/eval_routing.py --misses                # router exact match / agent recall / agent precision
 ```
 
+```powershell
+pip install sentence-transformers                      # enables hybrid / neural search (installs PyTorch; model downloads on first use)
+python scripts/eval_retrieval.py --embedder hybrid --misses            # default mode: meaning + exact words
+python scripts/eval_retrieval.py --embedder hybrid --lexical-weight 0.3 # try another blend (0 = neural only, 1 = TF-IDF only)
+python scripts/eval_retrieval.py --embedder hybrid --calibrate         # suggests a score floor (rag.hybrid_min_score)
+python scripts/eval_retrieval.py --embedder tfidf                      # keyword-only, no install needed
+```
+
 Switch the retrieval back end in `config.yaml` (`rag.embedder`, `rag.index_type`, `rag.chunk_strategy`) or per run with the flags above. Neural embeddings: `pip install sentence-transformers` and set `rag.embedder: sentence_transformers` (or `openai` with `OPENAI_API_KEY`; its token use is logged under caller `embeddings`).
+
+### Add your own PDF
+
+```powershell
+mkdir src\data\pdfs\tax                               # sub-folder name = category (tax, bonds, ...); loose files get 'documents'
+copy C:\path\to\guide.pdf src\data\pdfs\tax\          # optional: add title/reference in src\data\pdfs\sources.json
+python -m streamlit run src/web_app/app.py              # restart; log shows: pdf guide.pdf: N pages -> N documents
+```
+
+Extracted text is cached in `.cache/pdf_text/` and neural embeddings in `.cache/embeddings/` (delete `.cache/` to force a rebuild).
 
 ## 5. Check logging
 

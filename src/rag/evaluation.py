@@ -85,6 +85,44 @@ def evaluate_retrieval(retriever: Retriever, queries: list[dict[str, Any]], k: i
 
 
 @dataclass
+class ScoreCalibration:
+    off_topic_top: list[float]   # best score returned for each out-of-scope query (ignoring the floor)
+    relevant: list[float]        # score of the first correct hit for each answerable query that found one
+    suggested_floor: float | None  # midpoint of the gap, or None if off-topic scores overlap relevant ones
+
+    @property
+    def separable(self) -> bool:
+        return self.suggested_floor is not None
+
+    def keep_all_floor(self, margin: float = 0.05) -> float | None:
+        """Highest floor (a ``margin`` below the weakest correct hit) that still keeps every correct hit."""
+        return round(max(0.0, min(self.relevant) - margin), 3) if self.relevant else None
+
+    def off_topic_rejected(self, floor: float) -> int:
+        return sum(1 for score in self.off_topic_top if score < floor)
+
+
+def calibrate_floor(retriever: Retriever, queries: list[dict[str, Any]], k: int = 3) -> ScoreCalibration:
+    """Where could ``min_score`` sit? Compare off-topic top scores with the scores of correct hits."""
+    off_topic, relevant = [], []
+    for item in queries:
+        hits = retriever.search(item["q"], k=k, min_score=0.0)
+        if not hits:
+            continue
+        if not item["expected"]:
+            off_topic.append(hits[0].score)
+            continue
+        wanted = {e.lower() for e in item["expected"]}
+        found = next((h.score for h in hits if h.title.lower() in wanted), None)
+        if found is not None:
+            relevant.append(found)
+    suggested = None
+    if off_topic and relevant and max(off_topic) < min(relevant):
+        suggested = round((max(off_topic) + min(relevant)) / 2, 3)
+    return ScoreCalibration(sorted(off_topic), sorted(relevant), suggested)
+
+
+@dataclass
 class RoutingReport:
     n: int
     exact_match: float

@@ -4,7 +4,7 @@ A multi-agent conversational assistant that teaches beginners about investing. S
 
 > Educational tool only. It does not give personalised financial, tax or legal advice, and every answer carries a disclaimer.
 
-**It runs with zero API keys** - without an LLM key the agents return their deterministic, fully grounded answers; with a key (Anthropic, Gemini or OpenAI) the same facts are rewritten conversationally.
+**It runs with zero API keys** - without an LLM key the agents return their deterministic, fully grounded answers; with a key (Anthropic, Gemini or OpenAI) the same facts are rewritten conversationally. Knowledge-base search is **hybrid** (semantic meaning plus exact-word matching) when `sentence-transformers` is installed (`pip install sentence-transformers`), and falls back to keyword (TF-IDF) search otherwise.
 
 ## Quick start
 
@@ -53,19 +53,60 @@ Details and design rationale: [docs/DESIGN.md](docs/DESIGN.md). Architecture, re
 
 | Piece | What the project does |
 |---|---|
-| Chunking | `fixed` sliding windows or `recursive` splitting (paragraph > line > sentence > word, then overlap). **Note:** every article in this knowledge base is under 90 words, below the 140-word chunk size, so both strategies currently produce identical chunks; the strategies matter once longer documents are added |
-| Embeddings | Pluggable (`src/rag/embedders.py`): TF-IDF (lexical, default), sentence-transformers or OpenAI (neural). Vectors are L2-normalised, so inner product is cosine similarity |
-| Search | Cosine similarity over a FAISS index, then a score floor, one chunk per article, optional category filter |
-| Index | `flat` = exact brute force (right for ~130 chunks). `hnsw` = FAISS HNSW graph index; on this corpus it returns the same results as `flat`, so it only pays off at thousands of chunks |
-| Evals | `evals/retrieval_eval.json` (44 labelled queries: direct, paraphrase, out-of-scope) and `evals/routing_eval.json` (24 queries) |
+| Chunking | `fixed` sliding windows or `recursive` splitting (paragraph > line > sentence > word, then overlap). **Note:** every curated article is under 90 words, below the 140-word chunk size, so both strategies currently produce identical chunks for them; PDF pages are long enough to be split |
+| Search (default: **hybrid**) | **Meaning first, exact words second.** Every chunk is scored by a neural embedder (`sentence-transformers/all-MiniLM-L6-v2`) and by TF-IDF; the final score is `0.5 x neural + 0.5 x TF-IDF` (`rag.hybrid_lexical_weight`). TF-IDF scores run about half the size of neural ones, so meaning still dominates, but a rare exact term ("form 8880", "529", "wash sale") that the neural model cannot tell apart is carried by the TF-IDF half. Then a score floor, one chunk per article, optional category filter |
+| Fallbacks | If `sentence-transformers` is not installed (or the model cannot load) hybrid degrades to TF-IDF only, with a warning. Other modes: `rag.embedder: sentence_transformers` / `openai` (neural only) or `tfidf` (lexical only) |
+| Index | One FAISS index per channel: `flat` = exact (right for ~500 chunks), or `hnsw` (graph index; returns the same results here, pays off at thousands of chunks) |
+| Embedding cache | Neural corpus embeddings are cached in `.cache/embeddings/` while the model and texts are unchanged (startup with the neural model: ~25 s first run, ~11 s after; the rest is loading PyTorch and the model) |
+| Off-topic handling | The router refuses messages with no finance keyword **unless the knowledge base recognises them**: a code found verbatim in it (e.g. "form 8880"), or - for neural/hybrid retrieval - a top hit scoring at least `rag.router_rescue_score` (0.30) |
+| Evals | `evals/retrieval_eval.json` (52 labelled queries: direct, paraphrase, exact, out-of-scope), `evals/pdf_eval.json` (19 questions on the IRS PDF) and `evals/routing_eval.json` (24 queries) |
 
 ```powershell
 python scripts/eval_retrieval.py --misses       # hit@1, hit@3, MRR, precision@3, no-answer rate, latency + the failures
-python scripts/eval_retrieval.py --compare      # tfidf vs sentence_transformers vs openai, flat vs hnsw (skips what is not installed)
+python scripts/eval_retrieval.py --compare      # tfidf, neural, hybrid x flat/hnsw (skips what is not installed)
+python scripts/eval_retrieval.py --embedder hybrid --lexical-weight 0.3   # try another blend
 python scripts/eval_routing.py --misses         # exact match / agent recall / agent precision of the keyword router
 ```
 
-Measured with the default TF-IDF embedder (k=3): **direct queries hit@3 100%** (MRR 0.89), **paraphrase queries hit@3 42%** (MRR 0.38), and 2 of 4 out-of-scope queries wrongly return hits ("capital of france" matches *Capital Gains*; their scores overlap with weak true hits, so `min_score` cannot fix it). That gap is the lexical-embedding limitation: set `rag.embedder` to a neural model and re-run `--compare` to measure the improvement (the neural back ends could not be run here, so their numbers are not measured). Routing: exact match 79%, agent recall 96%, agent precision 84%; the misses are mostly `finance_qa` being added next to another agent on "what is..." questions (by design) and "price to earnings" routing to the market agent. `pytest` guards these as quality floors.
+#### Adding PDFs to the knowledge base
+
+Drop PDFs under `src/data/pdfs/<category>/` (sub-folder name = category, so `tax/` is searched by the tax agent; files directly in `pdfs/` get category `documents`). They are indexed **one document per page**, so answers cite page numbers (for example *IRS Publication 590-A (2025) (p. 21)*). Optional `src/data/pdfs/sources.json` maps a file name to a display `title` and a source `reference` URL.
+
+- Needs `pip install pypdf` (in `requirements.txt`; PDFs are skipped with a warning if it is missing). Scanned PDFs have no text layer and would need OCR.
+- Repeated running headers/footers (lines that recur on at least 40% of pages, ignoring digits) are stripped, kerned words such as "Y ou" are re-joined, and extracted text is cached in `.cache/pdf_text/` (first parse of the 62-page sample: ~4 s; cached: ~10 ms). The cache key includes file size and modification time, so editing a PDF re-parses it.
+- Included sample: **IRS Publication 590-A (2025)**, 62 pages, ~45,000 words (public-domain US government document, https://www.irs.gov/pub/irs-pdf/p590a.pdf).
+- Evaluate it with `python scripts/eval_retrieval.py --set pdf_eval.json --misses`. The 14 questions in `evals/pdf_eval.json` have ground-truth pages found by matching the answer sentence in the PDF text, not by looking at retrieval output.
+- Compare against the curated articles only with `--no-pdf`.
+
+#### Measured results (k=3, this machine, each mode at its default score floor)
+
+`tfidf` = lexical only, `neural` = `sentence-transformers/all-MiniLM-L6-v2` only, `hybrid` = the default blend. The OpenAI embedder is implemented but was not measured (no key here).
+
+| Eval set | Metric | tfidf | neural | **hybrid** |
+|---|---|---|---|---|
+| Curated articles (52 queries, PDF excluded) | hit@1 / hit@3 / MRR | 67% / 81% / 0.74 | 83% / 92% / 0.88 | **81% / 94% / 0.88** |
+| | direct hit@3 | 100% | 100% | 100% |
+| | exact-term hit@3 (`529`, `hsa`, `vix`...) | 75% | 88% | **100%** |
+| | paraphrase hit@3 | 42% | 75% | 75% |
+| | off-topic correctly empty (4) | 50% | 100% | 75% |
+| IRS PDF (19 questions) | hit@1 / hit@3 / MRR | 29% / 59% / 0.41 | 24% / 71% / 0.44 | 29% / **82%** / **0.54** |
+| | direct hit@3 | 43% | 100% | 86% |
+| | exact hit@3 (IRS form numbers) | 100% | **60%** | **100%** |
+| | paraphrase hit@3 | 40% | 40% | **60%** |
+| Curated articles with the PDF also indexed | hit@3 | 77% | 92% | **94%** |
+| Latency | per query | ~1-4 ms | ~10 ms | ~10-16 ms |
+
+What this shows:
+- **Meaning matters most**: the neural model lifts paraphrase hit@3 from 42% to 75% ("cancel my IRA" -> the page on *revoking* it).
+- **Exact words still matter for a few cases**: on rare identifiers the neural model drops to 60% (it cannot tell *Form 8880* from *Form 5498*) while TF-IDF gets 100%. Hybrid keeps neural's strength and recovers the exact lookups.
+- **The blend weight was swept** (0.3 to 0.7) on these sets: 0.3 left exact lookups at 60%, 0.5 reached 100% and the best PDF hit@3 (82%), 0.6-0.7 started to cost direct/paraphrase quality. 0.4-0.6 are all reasonable; the PDF set is only 19 questions, so some of this is tuned to it.
+- **Where hybrid is weaker than neural-only**: hit@1 and MRR on the curated set are about the same (0.88), PDF direct hit@3 is 86% vs 100%, and off-topic rejection is 75% vs 100% ("capital of france" matches the word *capital* in *Capital Gains*; the router's off-topic filter stops it earlier).
+- **Score floors differ by mode** (`rag.min_score` 0.05 for TF-IDF, `rag.neural_min_score` 0.30, `rag.hybrid_min_score` 0.15). The hybrid floor keeps every correct hit (weakest scored 0.21) and rejects 3 of 4 off-topic queries. After changing the model or weights run `python scripts/eval_retrieval.py --embedder <mode> --calibrate`.
+- The remaining misses are mostly paraphrases that land on a neighbouring PDF page.
+
+The unit tests are hermetic: they use TF-IDF, no PDF and no model download; hybrid logic is tested with a fake neural embedder, plus live tests that run only if `sentence-transformers` and the model are available.
+
+Routing (keyword rules): exact match 79%, agent recall 96%, agent precision 84%; the misses are mostly `finance_qa` being added next to another agent on "what is..." questions (by design) and "price to earnings" routing to the market agent. In an informal probe, 12 of 12 keyword-free on-topic questions (e.g. "what is form 8880 used for", "can I undo opening an IRA") were answered and 0 of 14 off-topic ones were; 12 of those on-topic and off-topic probes were also used to pick the 0.30 rescue threshold, so treat that as indicative. `pytest` guards the quality floors.
 
 ### Guardrails
 
@@ -89,14 +130,14 @@ src/
   agents/      six agents (finance_qa, portfolio_agent, market_agent, goal_agent, news_agent, tax_education)
   core/        BaseAgent, LLM clients, models, config, guardrails, finance_math, portfolio_analysis, goal_planner
   data/        market_data.py (providers + cache + fallbacks), assets.py, knowledge_base/*.md, glossary.json, samples
-  rag/         documents (load + fixed/recursive chunking), embedders (TF-IDF / sentence-transformers / OpenAI), retriever, vector_store (FAISS flat / HNSW / NumPy), evaluation (metrics)
+  rag/         documents (load + fixed/recursive chunking), pdf_loader (per-page PDF text), embedders (TF-IDF / sentence-transformers / OpenAI), retriever, vector_store (FAISS flat / HNSW / NumPy), evaluation (metrics)
   workflow/    router.py, graph.py (LangGraph), assistant.py (facade)
   web_app/     app.py (Streamlit), charts.py (Plotly)
   mcp_server/  server.py (Claude Desktop integration)
   utils/       cache, retry/backoff, rate limiter, parsing, formatting, logging, call_log, usage_log
 docs/          DESIGN.md, IMPLEMENTATION_FLOW.md, ARCHITECTURE.md, diagrams/
-evals/         labelled retrieval and routing sets
-tests/         214 tests    scripts/ (benchmark, eval_retrieval, eval_routing, agent_stats, token_usage)    config.yaml    Dockerfile
+evals/         labelled retrieval, PDF and routing sets
+tests/         236 tests    scripts/ (benchmark, eval_retrieval, eval_routing, agent_stats, token_usage)    config.yaml    Dockerfile
 ```
 
 ## What each agent does
@@ -126,10 +167,15 @@ Multi-intent messages run several agents in order, e.g. *"Analyze my portfolio a
 | `market.provider` | `yfinance`, `alpha_vantage`, `mock` |
 | `market.cache_ttl_seconds` / `retries` / `backoff_base_seconds` | 30-minute TTL cache, exponential backoff. `retries` is the number of attempts and is capped at 5 (single backoff sleep capped at 30 s) |
 | `market.indices` | Tickers shown in the market overview |
+| `rag.pdf_dir` / `rag.pdf_cache_dir` | PDFs indexed page by page (default `src/data/pdfs`; `""` disables) and the extracted-text cache (`.cache/pdf_text`). Needs `pypdf` |
 | `rag.chunk_strategy` | `recursive` (paragraph > sentence > word boundaries, default) or `fixed` (sliding word windows) |
-| `rag.embedder` | `tfidf` (default, no key), `sentence_transformers` (`pip install sentence-transformers`) or `openai` (`OPENAI_API_KEY`); an unavailable back end falls back to TF-IDF with a warning |
+| `rag.embedder` | `hybrid` (default: meaning + exact words), `tfidf`, `sentence_transformers` or `openai` (`OPENAI_API_KEY`). Neural modes need `pip install sentence-transformers`; an unavailable back end falls back to TF-IDF with a warning |
+| `rag.hybrid_semantic` / `rag.hybrid_lexical_weight` | The neural half of hybrid (`sentence_transformers` or `openai`) and the weight of the TF-IDF half (default 0.5) |
+| `rag.embedding_cache_dir` | Where neural corpus embeddings are cached (`.cache/embeddings`; `""` disables) |
+| `rag.router_rescue_score` | A keyword-free question is still answered if the knowledge base matches it at least this well (0.30; neural/hybrid only), or contains a code found verbatim in the KB |
 | `rag.index_type` | `flat` (exact, default) or `hnsw` (approximate graph index; `hnsw_m`, `hnsw_ef_construction`, `hnsw_ef_search`) |
-| `rag.*` (other) | Knowledge-base paths, chunk size/overlap, `top_k`, `min_score` |
+| `rag.min_score` / `rag.neural_min_score` / `rag.hybrid_min_score` | Score floor for TF-IDF (0.05), neural (0.30) and hybrid (0.15); calibrate with `scripts/eval_retrieval.py --calibrate` |
+| `rag.*` (other) | Knowledge-base paths, chunk size/overlap, `top_k` |
 
 Environment overrides: `FINANCE_LLM_PROVIDER`, `FINANCE_MARKET_PROVIDER`, `FINANCE_CONFIG`, `FINANCE_LOG_DIR` (default `logs/`), `FINANCE_CALL_LOG=off` (disable the call/token logs).
 
@@ -193,7 +239,7 @@ Works with `mcp` 1.x (`FastMCP`) and 2.x (`MCPServer`). The server is stdio-base
 ## Testing
 
 ```bash
-python -m pytest --cov            # 214 tests, ~95% line coverage (offline: mock market data, no API keys)
+python -m pytest --cov            # 236 tests, ~95% line coverage (offline: mock market data, no API keys)
 python scripts/benchmark.py       # latency benchmarks
 ```
 
@@ -217,6 +263,7 @@ With an LLM enabled, each agent in a turn adds one provider round-trip (cache hi
 |---|---|
 | "Sample data (live feed unavailable)" banners | yfinance failed or is rate-limited; the app is using clearly labelled sample prices. Retry later, or set `ALPHA_VANTAGE_API_KEY` as a secondary source |
 | "Cached data (may be outdated)" | Live fetch failed; showing the last good value past its 30-min TTL |
+| PDF pages never show up in answers | `pip install pypdf`; check `rag.pdf_dir` and that the PDF is under a sub-folder such as `src/data/pdfs/tax/`; look for `pdf ... pages -> ... documents` in `logs/app.log`. Scanned (image-only) PDFs contain no text |
 | Sidebar says "AI model: offline" | No API key found. Set it as an environment variable in the terminal that launches the app (a `.env` file is not read) and install the provider's SDK |
 | One agent fails now and then | `python scripts/agent_stats.py --failures`, then look at the error type and the failing queries (see *Monitoring*) |
 | An answer lost its LLM wording | The guardrail rejected a rewrite that changed figures/citations and used the grounded draft; look for `rewrite rejected by guardrail` in `logs/app.log` |
@@ -227,11 +274,12 @@ With an LLM enabled, each agent in a turn adds one provider round-trip (cache hi
 
 ## Known limitations
 
-- **Default embeddings are TF-IDF**, not neural: fast, key-free and good on this vocabulary, but they miss paraphrases with no word overlap (paraphrase hit@3 is 42%). Neural back ends (`sentence_transformers`, `openai`) are implemented behind `rag.embedder` but were not run here, so their quality is unmeasured. The eval sets are small (44 retrieval / 24 routing queries), so treat the percentages as indicative.
+- **Hybrid search needs `pip install sentence-transformers`** (pulls in PyTorch, several hundred MB, plus a model download on first use). Without it the app still runs, but silently degrades to TF-IDF-only search (a warning is logged, and `AI model`/retriever mode shows `tfidf`), where paraphrase hit@3 is 42% instead of 75%. The OpenAI embedder is unmeasured. The eval sets are small (52 retrieval, 19 PDF, 24 routing queries) and the blend weight (0.5), score floors (0.15 hybrid, 0.30 neural) and router rescue threshold (0.30) were chosen on them, from only 4 off-topic queries, so treat the percentages as indicative and re-calibrate on your own data.
 - **Knowledge-base content was written for this project**, not scraped from the cited sites; `reference` links point to the relevant authoritative site section for further reading. Tax limits quoted are labelled as tax-year 2025 and should be verified.
 - **Projections** use fixed illustrative return/volatility assumptions by risk level (4.5-8% / 6-16%); they are not forecasts. The stress-test shocks and asset-class risk scores are rough teaching heuristics.
 - **Asset classification** covers ~40 common tickers; unknown tickers are treated as individual stocks in an "Unclassified" sector (flagged).
 - **Guardrails are regex-based** (advice, injection, PII, off-topic): they miss unusual phrasings and may occasionally flag harmless text. The number check on LLM rewrites ignores whole numbers up to 12.
 - **Monitoring** records agent exceptions and `ok=False` results only; silent fallbacks to cached/mock market data are not counted as failures (check the freshness label). The LLM SDKs also retry internally on top of the app's capped retry helper.
+- **PDFs:** text extraction only (no OCR, tables and multi-column layouts come out as flat text; the cover page's one-off print-proof banner is not removed). Retrieval is per page, so an answer that spans two pages is cited as two pages. TF-IDF vectors are converted to dense arrays, which is fine for ~500 chunks (~35 MB) but will not scale to tens of thousands of chunks; for large PDF collections use a neural-only mode (`rag.embedder: sentence_transformers`) with `rag.index_type: hnsw`. The TF-IDF half is re-fitted at every start (cheap); neural corpus embeddings are cached on disk.
 - **Docker** files are provided but were not built in the development environment. Streamlit session memory is in-process (no persistence across restarts, no authentication).
 - The optional LLM layer was not run against a live provider during development (no keys available); it is covered through a fake client.

@@ -39,7 +39,10 @@ class FakeLLM(LLMClient):
 
 @pytest.fixture(scope="session")
 def settings():
-    return load_settings()
+    s = load_settings()
+    s.set("rag.pdf_dir", "")  # keep the curated-article tests hermetic; PDF behaviour is covered in test_pdf.py
+    s.set("rag.embedder", "tfidf")  # no model download in unit tests; hybrid/neural are covered in test_rag_advanced.py
+    return s
 
 
 @pytest.fixture(scope="session")
