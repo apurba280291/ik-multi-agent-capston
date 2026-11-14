@@ -21,6 +21,7 @@ from src.core.models import AgentContext, AgentResponse, Source
 from src.utils.formatting import citation_block, with_disclaimer
 from src.utils.logging_utils import get_logger
 from src.utils.parsing import extract_tickers, parse_risk
+from src.workflow.orchestrator import Orchestrator
 from src.workflow.router import Router
 
 import re
@@ -67,6 +68,10 @@ class FinanceState(TypedDict, total=False):
     final_answer: str
     sources: list[dict[str, Any]]
     agents_used: list[str]
+    rules_confident: bool
+    needs_review: bool
+    replans: int
+    plan_source: str
 
 
 def _update_profile(profile: dict[str, Any], query: str) -> dict[str, Any]:
@@ -80,7 +85,19 @@ def _update_profile(profile: dict[str, Any], query: str) -> dict[str, Any]:
     return profile
 
 
-def build_graph(agents: dict[str, BaseAgent], router: Router, max_history: int = 20, checkpointer=None):
+def _facts(state: FinanceState) -> dict[str, Any]:
+    """Small, non-sensitive summary of the session for the orchestrator prompt."""
+    profile = state.get("profile", {})
+    return {
+        "has_portfolio": bool(state.get("portfolio")),
+        "recent_tickers": state.get("last_tickers", [])[:3],
+        "risk_tolerance": profile.get("risk_tolerance"),
+        "age": profile.get("age"),
+    }
+
+
+def build_graph(agents: dict[str, BaseAgent], router: Router, max_history: int = 20, checkpointer=None,
+                orchestrator: Orchestrator | None = None):
     def understand(state: FinanceState) -> dict[str, Any]:
         # Input guardrails: mask personal data before it reaches agents/LLM/history, and flag prompt injection.
         query, redacted = redact_pii(state.get("query", ""))
@@ -98,6 +115,7 @@ def build_graph(agents: dict[str, BaseAgent], router: Router, max_history: int =
             "last_tickers": last[:5],
             "responses": [], "queue": [], "intents": [], "shared": {}, "flags": {"blocked": blocked},
             "final_answer": "", "sources": [], "agents_used": [],
+            "rules_confident": False, "needs_review": False, "replans": 0, "plan_source": "",
             "trace": trace,
         }
 
@@ -108,10 +126,38 @@ def build_graph(agents: dict[str, BaseAgent], router: Router, max_history: int =
         flags = {"greeting": d.greeting, "off_topic": d.off_topic, "advice": d.advice_request}
         return {
             "intents": d.intents, "queue": list(d.intents), "flags": flags, "route_method": d.method,
+            "rules_confident": bool(d.intents) and router.rules_confident(d),
             "trace": state.get("trace", []) + [f"route[{d.method}]: {d.intents or ('greeting' if d.greeting else 'off-topic' if d.off_topic else '-')}"],
         }
 
+    def orchestrate(state: FinanceState) -> dict[str, Any]:
+        """LLM plans which agents run (and in what order); the keyword-rule plan is the fallback. No-op without agents to run."""
+        if orchestrator is None or not state.get("queue"):
+            return {}
+        d = orchestrator.plan(state["query"], state.get("history", []), _facts(state), state["queue"], state.get("rules_confident", False))
+        trace = state.get("trace", [])
+        update: dict[str, Any] = {"queue": d.agents, "intents": d.agents, "plan_source": d.source}
+        if d.source == "llm":
+            update["route_method"] = "orchestrator-llm"
+            trace = trace + [f"orchestrator[llm]: {' -> '.join(d.agents)}" + (f" ({d.reason})" if d.reason else "")]
+        elif d.note:
+            trace = trace + [f"orchestrator[rules]: {d.note}"]
+        update["trace"] = trace
+        return update
+
+    def review(state: FinanceState) -> dict[str, Any]:
+        """After a failed agent / a request for user input the LLM may keep, change or end the remaining plan."""
+        d = orchestrator.review(state["query"], state.get("responses", []), state.get("queue", []), _facts(state))
+        label = "orchestrator[review/llm]" if d.source == "llm" else "orchestrator[review/rules]"
+        detail = (' -> '.join(d.agents) or "finish") + (f" ({d.reason})" if d.reason else (f" ({d.note})" if d.note else ""))
+        return {
+            "queue": d.agents, "needs_review": False, "replans": state.get("replans", 0) + 1,
+            "trace": state.get("trace", []) + [f"{label}: {detail}"],
+        }
+
     def next_step(state: FinanceState) -> str:
+        if state.get("needs_review"):
+            return "review"
         queue = state.get("queue", [])
         return queue[0] if queue else "compose"
 
@@ -125,9 +171,12 @@ def build_graph(agents: dict[str, BaseAgent], router: Router, max_history: int =
                 shared=dict(state.get("shared", {})),
             )
             resp = agent.handle(state["query"], ctx)
+            record = resp.to_dict()
+            executed = len(state.get("responses", [])) + 1
             return {
-                "responses": state.get("responses", []) + [resp.to_dict()],
+                "responses": state.get("responses", []) + [record],
                 "queue": state.get("queue", [])[1:],
+                "needs_review": orchestrator is not None and orchestrator.should_review(record, state.get("replans", 0), executed),
                 "shared": ctx.shared,
                 "trace": state.get("trace", []) + [f"{name}: {'ok' if resp.ok else 'FAILED ' + str(resp.error)}"],
             }
@@ -179,13 +228,17 @@ def build_graph(agents: dict[str, BaseAgent], router: Router, max_history: int =
     g = StateGraph(FinanceState)
     g.add_node("understand", understand)
     g.add_node("route", route)
+    g.add_node("orchestrate", orchestrate)
+    g.add_node("review", review)
     g.add_node("compose", compose)
-    targets = {n: n for n in agents} | {"compose": "compose"}
+    targets = {n: n for n in agents} | {"compose": "compose", "review": "review"}
     for name in agents:
         g.add_node(name, make_agent_node(name))
         g.add_conditional_edges(name, next_step, targets)
     g.add_edge(START, "understand")
     g.add_edge("understand", "route")
-    g.add_conditional_edges("route", next_step, targets)
+    g.add_edge("route", "orchestrate")
+    g.add_conditional_edges("orchestrate", next_step, targets)
+    g.add_conditional_edges("review", next_step, targets)
     g.add_edge("compose", END)
     return g.compile(checkpointer=checkpointer or MemorySaver())

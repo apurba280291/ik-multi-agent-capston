@@ -52,7 +52,7 @@ RULES: dict[str, list[tuple[str, int]]] = {
 FINANCE_WORDS = re.compile(
     r"\b(invest\w*|stock\w*|bonds?|funds?|etfs?|money|financ\w*|sav(e|ing|ings)|retire\w*|tax\w*|market\w*|portfolio|loans?|debt|budget\w*|"
     r"inflation|interest|dividends?|crypto\w*|bitcoin|mortgage|credit|income|wealth|asset\w*|broker\w*|risk|diversif\w*|compound|"
-    r"401k|ira|roth|hsa|529|equity|shares?|yield|price|rates?|economy|fed)\b",
+    r"401k|ira|roth|hsa|529|equity|shares?|yield|price|rates?|economy|fed)\b|401\s?\(\s?k\s?\)|403\s?\(\s?b\s?\)",
     re.I,
 )
 FOLLOW_UP = re.compile(r"\b(it|that|this|them|those|these|why|how come|more|and|also|then|what about|how about|really|explain)\b", re.I)
@@ -94,8 +94,22 @@ def rule_route(query: str) -> RouteDecision:
 
 
 class Router:
-    def __init__(self, llm: LLMClient | None = None, confident_score: int | None = 5):
+    def __init__(
+        self,
+        llm: LLMClient | None = None,
+        confident_score: int | None = 5,
+        retriever=None,
+        rescue_score: float = 0.30,
+        llm_routing: bool = True,
+    ):
         self.llm = llm or OfflineLLM()
+        # False when an Orchestrator makes the LLM decision instead (the router then only applies the deterministic rules).
+        self.llm_routing = llm_routing
+        # Messages with no finance keyword are normally refused as off-topic. With a retriever, they are kept if the
+        # knowledge base clearly recognises them: a code found verbatim (e.g. "form 8880"), or - for neural/hybrid
+        # retrieval, whose scores are comparable - a top hit scoring at least ``rescue_score``.
+        self.retriever = retriever
+        self.rescue_score = rescue_score
         # Token saver: when every agent the rules picked scores at least this, skip the LLM routing call.
         # ``None`` disables the shortcut (always ask the LLM when one is available).
         self.confident_score = confident_score
@@ -109,12 +123,15 @@ class Router:
         advice = is_advice_request(text)  # guardrail: see src/core/guardrails.py
         decision = rule_route(text)
         if not FINANCE_WORDS.search(text) and not extract_tickers(text) and not parse_holdings(text):
-            # Only a short message with a follow-up cue ("why is that?", "and for tesla?") inherits context.
-            if not (history and FOLLOW_UP.search(text) and len(text.split()) <= 7):
+            if self._kb_recognises(text):
+                decision.method = "knowledge-base"  # intents stay as the rules chose them (finance_qa by default)
+            # Otherwise only a short message with a follow-up cue ("why is that?", "and for tesla?") inherits context.
+            elif not (history and FOLLOW_UP.search(text) and len(text.split()) <= 7):
                 return RouteDecision(off_topic=True, advice_request=advice)
-            decision.method = "context"
-            decision.intents = self._follow_up(history) or ["finance_qa"]
-        elif self.llm.available and not self._rules_confident(decision):
+            else:
+                decision.method = "context"
+                decision.intents = self._follow_up(history) or ["finance_qa"]
+        elif self.llm_routing and self.llm.available and not self._rules_confident(decision):
             llm_intents = self._llm_route(text, history or [])
             if llm_intents:
                 decision.intents, decision.method = sorted(llm_intents, key=AGENT_ORDER.index), "llm"
@@ -123,6 +140,18 @@ class Router:
             # "Should I buy X?" can't be answered with advice, but current data on X is useful context.
             decision.intents = sorted([*decision.intents[: MAX_AGENTS - 1], "market_analysis"], key=AGENT_ORDER.index)
         return decision
+
+    def _kb_recognises(self, text: str) -> bool:
+        if self.retriever is None:
+            return False
+        if self.retriever.has_identifier(text):
+            return True
+        if self.retriever.mode == "tfidf":  # TF-IDF scores are not comparable across queries; use the identifier test only
+            return False
+        return bool(self.retriever.search(text, k=1, min_score=self.rescue_score))
+
+    def rules_confident(self, decision: RouteDecision) -> bool:
+        return self._rules_confident(decision)
 
     def _rules_confident(self, decision: RouteDecision) -> bool:
         if self.confident_score is None or not decision.intents:

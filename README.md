@@ -1,17 +1,19 @@
 # Finnie - AI Finance Assistant
 
-A multi-agent conversational assistant that teaches beginners about investing. Six specialised agents are orchestrated by a **LangGraph** workflow, grounded by a **FAISS** knowledge base (81 articles + 48 glossary terms, with source attribution), and connected to **live market data** (yfinance / Alpha Vantage) with caching, retries and graceful fallbacks. A **Streamlit** app provides chat, portfolio, market, goal and knowledge tabs, and an **MCP server** exposes the same tools to Claude Desktop.
+A multi-agent conversational assistant that teaches beginners about investing. Six specialised agents are orchestrated by an **LLM-driven orchestrator** (with a keyword-rules fallback) running inside a **LangGraph** workflow, grounded by a **FAISS** knowledge base (81 articles + 48 glossary terms, with source attribution), and connected to **live market data** (yfinance / Alpha Vantage) with caching, retries and graceful fallbacks. A **Streamlit** app provides chat, portfolio, market, goal and knowledge tabs, and an **MCP server** exposes the same tools to Claude Desktop.
 
 > Educational tool only. It does not give personalised financial, tax or legal advice, and every answer carries a disclaimer.
 
-**It runs with zero API keys** - without an LLM key the agents return their deterministic, fully grounded answers; with a key (Anthropic, Gemini or OpenAI) the same facts are rewritten conversationally.
+**It runs with zero API keys** - without an LLM key the agents return their deterministic, fully grounded answers; with a key (Anthropic, Gemini or OpenAI) the same facts are rewritten conversationally. Knowledge-base search is **hybrid** (semantic meaning plus exact-word matching) when `sentence-transformers` is installed (`pip install sentence-transformers`), and falls back to keyword (TF-IDF) search otherwise.
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
-streamlit run src/web_app/app.py          # http://localhost:8501
+streamlit run src/web_app/app.py          # http://localhost:8501 - create an account on first visit
 ```
+
+The app asks you to sign in (see *Authentication*); set `FINANCE_AUTH=off` to skip the login screen for a single-user demo.
 
 Optional: set `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` or `OPENAI_API_KEY` (and `ALPHA_VANTAGE_API_KEY`) **as environment variables in the terminal you launch the app from** - the app does not read a `.env` file. Install the matching SDK (`pip install google-genai` / `openai`; `anthropic` is in requirements).
 
@@ -49,6 +51,103 @@ Docker: `docker compose up --build` (not exercised in the development environmen
 
 Details and design rationale: [docs/DESIGN.md](docs/DESIGN.md). Architecture, request-flow and per-agent diagrams (Mermaid source plus SVG/PNG): [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+### RAG: chunking, embeddings, search, evals
+
+| Piece | What the project does |
+|---|---|
+| Chunking | `fixed` sliding windows or `recursive` splitting (paragraph > line > sentence > word, then overlap). **Note:** every curated article is under 90 words, below the 140-word chunk size, so both strategies currently produce identical chunks for them; PDF pages are long enough to be split |
+| Search (default: **hybrid**) | **Meaning first, exact words second.** Every chunk is scored by a neural embedder (`sentence-transformers/all-MiniLM-L6-v2`) and by TF-IDF; the final score is `0.5 x neural + 0.5 x TF-IDF` (`rag.hybrid_lexical_weight`). TF-IDF scores run about half the size of neural ones, so meaning still dominates, but a rare exact term ("form 8880", "529", "wash sale") that the neural model cannot tell apart is carried by the TF-IDF half. Then a score floor, one chunk per article, optional category filter |
+| Fallbacks | If `sentence-transformers` is not installed (or the model cannot load) hybrid degrades to TF-IDF only, with a warning. Other modes: `rag.embedder: sentence_transformers` / `openai` (neural only) or `tfidf` (lexical only) |
+| Index | One FAISS index per channel: `flat` = exact (right for ~500 chunks), or `hnsw` (graph index; returns the same results here, pays off at thousands of chunks) |
+| Embedding cache | Neural corpus embeddings are cached in `.cache/embeddings/` while the model and texts are unchanged (startup with the neural model: ~25 s first run, ~11 s after; the rest is loading PyTorch and the model) |
+| Off-topic handling | The router refuses messages with no finance keyword **unless the knowledge base recognises them**: a code found verbatim in it (e.g. "form 8880"), or - for neural/hybrid retrieval - a top hit scoring at least `rag.router_rescue_score` (0.30) |
+| Evals | `evals/retrieval_eval.json` (52 labelled queries: direct, paraphrase, exact, out-of-scope), `evals/pdf_eval.json` (19 questions on the IRS PDF) and `evals/routing_eval.json` (24 queries) |
+
+```powershell
+python scripts/eval_retrieval.py --misses       # hit@1, hit@3, MRR, precision@3, no-answer rate, latency + the failures
+python scripts/eval_retrieval.py --compare      # tfidf, neural, hybrid x flat/hnsw (skips what is not installed)
+python scripts/eval_retrieval.py --embedder hybrid --lexical-weight 0.3   # try another blend
+python scripts/eval_routing.py --misses         # exact match / agent recall / agent precision of the keyword router
+```
+
+#### Adding PDFs to the knowledge base
+
+Drop PDFs under `src/data/pdfs/<category>/` (sub-folder name = category, so `tax/` is searched by the tax agent; files directly in `pdfs/` get category `documents`). They are indexed **one document per page**, so answers cite page numbers (for example *IRS Publication 590-A (2025) (p. 21)*). Optional `src/data/pdfs/sources.json` maps a file name to a display `title` and a source `reference` URL.
+
+- Needs `pip install pypdf` (in `requirements.txt`; PDFs are skipped with a warning if it is missing). Scanned PDFs have no text layer and would need OCR.
+- Repeated running headers/footers (lines that recur on at least 40% of pages, ignoring digits) are stripped, kerned words such as "Y ou" are re-joined, and extracted text is cached in `.cache/pdf_text/` (first parse of the 62-page sample: ~4 s; cached: ~10 ms). The cache key includes file size and modification time, so editing a PDF re-parses it.
+- Included sample: **IRS Publication 590-A (2025)**, 62 pages, ~45,000 words (public-domain US government document, https://www.irs.gov/pub/irs-pdf/p590a.pdf).
+- Evaluate it with `python scripts/eval_retrieval.py --set pdf_eval.json --misses`. The 14 questions in `evals/pdf_eval.json` have ground-truth pages found by matching the answer sentence in the PDF text, not by looking at retrieval output.
+- Compare against the curated articles only with `--no-pdf`.
+
+#### Measured results (k=3, this machine, each mode at its default score floor)
+
+`tfidf` = lexical only, `neural` = `sentence-transformers/all-MiniLM-L6-v2` only, `hybrid` = the default blend. The OpenAI embedder is implemented but was not measured (no key here).
+
+| Eval set | Metric | tfidf | neural | **hybrid** |
+|---|---|---|---|---|
+| Curated articles (52 queries, PDF excluded) | hit@1 / hit@3 / MRR | 67% / 81% / 0.74 | 83% / 92% / 0.88 | **81% / 94% / 0.88** |
+| | direct hit@3 | 100% | 100% | 100% |
+| | exact-term hit@3 (`529`, `hsa`, `vix`...) | 75% | 88% | **100%** |
+| | paraphrase hit@3 | 42% | 75% | 75% |
+| | off-topic correctly empty (4) | 50% | 100% | 75% |
+| IRS PDF (19 questions) | hit@1 / hit@3 / MRR | 29% / 59% / 0.41 | 24% / 71% / 0.44 | 29% / **82%** / **0.54** |
+| | direct hit@3 | 43% | 100% | 86% |
+| | exact hit@3 (IRS form numbers) | 100% | **60%** | **100%** |
+| | paraphrase hit@3 | 40% | 40% | **60%** |
+| Curated articles with the PDF also indexed | hit@3 | 77% | 92% | **94%** |
+| Latency | per query | ~1-4 ms | ~10 ms | ~10-16 ms |
+
+What this shows:
+- **Meaning matters most**: the neural model lifts paraphrase hit@3 from 42% to 75% ("cancel my IRA" -> the page on *revoking* it).
+- **Exact words still matter for a few cases**: on rare identifiers the neural model drops to 60% (it cannot tell *Form 8880* from *Form 5498*) while TF-IDF gets 100%. Hybrid keeps neural's strength and recovers the exact lookups.
+- **The blend weight was swept** (0.3 to 0.7) on these sets: 0.3 left exact lookups at 60%, 0.5 reached 100% and the best PDF hit@3 (82%), 0.6-0.7 started to cost direct/paraphrase quality. 0.4-0.6 are all reasonable; the PDF set is only 19 questions, so some of this is tuned to it.
+- **Where hybrid is weaker than neural-only**: hit@1 and MRR on the curated set are about the same (0.88), PDF direct hit@3 is 86% vs 100%, and off-topic rejection is 75% vs 100% ("capital of france" matches the word *capital* in *Capital Gains*; the router's off-topic filter stops it earlier).
+- **Score floors differ by mode** (`rag.min_score` 0.05 for TF-IDF, `rag.neural_min_score` 0.30, `rag.hybrid_min_score` 0.15). The hybrid floor keeps every correct hit (weakest scored 0.21) and rejects 3 of 4 off-topic queries. After changing the model or weights run `python scripts/eval_retrieval.py --embedder <mode> --calibrate`.
+- The remaining misses are mostly paraphrases that land on a neighbouring PDF page.
+
+The unit tests are hermetic: they use TF-IDF, no PDF and no model download; hybrid logic is tested with a fake neural embedder, plus live tests that run only if `sentence-transformers` and the model are available.
+
+Routing (keyword rules): exact match 79%, agent recall 96%, agent precision 84%; the misses are mostly `finance_qa` being added next to another agent on "what is..." questions (by design) and "price to earnings" routing to the market agent. In an informal probe, 12 of 12 keyword-free on-topic questions (e.g. "what is form 8880 used for", "can I undo opening an IRA") were answered and 0 of 14 off-topic ones were; 12 of those on-topic and off-topic probes were also used to pick the 0.30 rescue threshold, so treat that as indicative. `pytest` guards the quality floors.
+
+### Authentication
+
+The Streamlit app requires a sign-in by default. Visitors see only the login form; nothing else (agents, knowledge base, market data) is loaded until they are signed in. The first visitor creates an account on the **Create account** tab.
+
+| Piece | How it works |
+|---|---|
+| Accounts | Local SQLite file (`auth.db_path`, default `data/users.sqlite3`, git-ignored and docker-ignored). Usernames are 3-32 characters, case-insensitive |
+| Passwords | Hashed with **scrypt** (salted, per-hash cost parameters) from the standard library; never stored or logged in clear. Policy: 8-128 characters, not a common password, must not contain the username |
+| Brute force | After `auth.max_failed_attempts` (5) failures a username is locked for `auth.lockout_minutes` (15). Failures are counted per submitted name even when no such account exists, and login errors are always "Invalid username or password.", so neither the message, the lockout nor (via a dummy hash) the response time reveals which usernames exist |
+| Sessions | The signed-in user lives in the browser tab's Streamlit session and expires after `auth.session_minutes` (60) idle. Every login starts a fresh chat session id (`user-<id>-<random>`), and signing out clears the conversation and portfolio, so one user's memory is not reachable from another account |
+| Account actions | Sidebar: change password, sign out. Admin CLI: `python scripts/manage_users.py create/list/reset-password/unlock/delete <username>` |
+| Switching off | `auth.enabled: false` or `FINANCE_AUTH=off` gives the old anonymous single-user behaviour (demos, tests). `auth.allow_registration: false` closes sign-up; accounts are then created with the CLI |
+
+Docker: `docker-compose.yml` mounts a `finnie-data` volume at `/app/data` so accounts survive container re-creation.
+
+**Not included (be aware before exposing it):** Streamlit serves plain HTTP, so run it behind an HTTPS reverse proxy anywhere but your own machine, otherwise passwords cross the network in clear text. There is no email verification or e-mailed password reset (an admin resets passwords with the CLI), no multi-factor sign-in, no "remember me" (a page refresh signs you out), and no limit on how many accounts can be created. Conversation history is still in-process memory, not stored per user in the database, and the MCP server (a local stdio tool for Claude Desktop) is not authenticated.
+
+### Orchestration
+
+Control flow is an **LLM-driven orchestrator** inside the LangGraph workflow ([src/workflow/orchestrator.py](src/workflow/orchestrator.py)); diagrams in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+1. **Deterministic first.** Greetings, off-topic questions, advice requests, PII redaction and prompt-injection blocking are decided by rules, so the LLM is never shown those messages.
+2. **Plan (1 LLM call).** The LLM sees the agent catalogue, the message (as quoted JSON data), the last few turns and a few session facts (has a portfolio? recent tickers, risk, age), and returns JSON: which agents to run and in what order, with a short reason.
+3. **Run.** Agents execute the plan, passing data forward through shared state.
+4. **Review (only when needed).** If an agent fails or asks the user for input, the LLM sees a compact result summary and may keep the plan, add or swap in another agent, or finish early. Up to `orchestrator.max_replans` (2) reviews per turn; `orchestrator.review_every_step: true` turns this into a full supervisor loop.
+5. **Compose** merges the sections, citations and disclaimer.
+
+The LLM controls *which agents run*, never the facts. Its reply is validated (JSON, known agent names, no repeats, at most 3 agents plus one substitute, `portfolio_analysis` before `goal_planning`). With no API key, an LLM error or an invalid reply the keyword-rule plan is used instead, so offline behaviour is identical to the old rules-only router. The trace under "How I answered" shows which path ran (`orchestrator[llm]: portfolio_analysis -> goal_planning (...)`, `orchestrator[rules]: ...`, `orchestrator[review/llm]: ...`).
+
+| Setting | Meaning |
+|---|---|
+| `orchestrator.mode` | `llm` (default) or `rules` (the previous behaviour: keyword rules, with the LLM only classifying when the rules are unsure). Env: `FINANCE_ORCHESTRATOR` |
+| `orchestrator.max_agents` / `max_replans` | Agents per plan (3, plus one substitute) and LLM reviews per turn (2) |
+| `orchestrator.review_every_step` | Review after every agent instead of only after problems |
+| `orchestrator.skip_llm_when_confident` | Save the planning call when the keyword rules are already confident (off by default, so the LLM decides) |
+
+Cost: with an LLM key, each routed turn makes **1 planning call** (about the cost of the old LLM routing call, but now on every turn unless `skip_llm_when_confident` is on), plus 1 per review. These calls are logged as caller `orchestrator` in `logs/llm_usage.jsonl`. **Not measured here:** I had no API key, so the orchestrator is tested with a scripted fake LLM (plans, dependency ordering, invalid replies, fallbacks, re-planning, caps, guardrails) but its real plan quality is unmeasured. Measure it with your key: `python scripts/eval_routing.py --orchestrator --misses` (compares the LLM's plans with the rules on `evals/routing_eval.json`).
+
 ### Guardrails
 
 All in [src/core/guardrails.py](src/core/guardrails.py) except the topic filter, which lives in the router:
@@ -71,13 +170,15 @@ src/
   agents/      six agents (finance_qa, portfolio_agent, market_agent, goal_agent, news_agent, tax_education)
   core/        BaseAgent, LLM clients, models, config, guardrails, finance_math, portfolio_analysis, goal_planner
   data/        market_data.py (providers + cache + fallbacks), assets.py, knowledge_base/*.md, glossary.json, samples
-  rag/         documents (load/chunk), retriever (TF-IDF embeddings), vector_store (FAISS / NumPy)
-  workflow/    router.py, graph.py (LangGraph), assistant.py (facade)
-  web_app/     app.py (Streamlit), charts.py (Plotly)
+  rag/         documents (load + fixed/recursive chunking), pdf_loader (per-page PDF text), embedders (TF-IDF / sentence-transformers / OpenAI), retriever, vector_store (FAISS flat / HNSW / NumPy), evaluation (metrics)
+  workflow/    router.py (rules + guardrail flags), orchestrator.py (LLM planner/reviewer), graph.py (LangGraph), assistant.py (facade)
+  web_app/     app.py (Streamlit), auth_ui.py (login/session), charts.py (Plotly)
+  auth/        passwords (scrypt + policy), store (SQLite), service (register/login/lockout)
   mcp_server/  server.py (Claude Desktop integration)
   utils/       cache, retry/backoff, rate limiter, parsing, formatting, logging, call_log, usage_log
 docs/          DESIGN.md, IMPLEMENTATION_FLOW.md, ARCHITECTURE.md, diagrams/
-tests/         199 tests    scripts/ (benchmark, agent_stats, token_usage)    config.yaml    Dockerfile
+evals/         labelled retrieval, PDF and routing sets
+tests/         300 tests    scripts/ (benchmark, eval_retrieval, eval_routing, agent_stats, token_usage, manage_users)    config.yaml    Dockerfile
 ```
 
 ## What each agent does
@@ -107,7 +208,17 @@ Multi-intent messages run several agents in order, e.g. *"Analyze my portfolio a
 | `market.provider` | `yfinance`, `alpha_vantage`, `mock` |
 | `market.cache_ttl_seconds` / `retries` / `backoff_base_seconds` | 30-minute TTL cache, exponential backoff. `retries` is the number of attempts and is capped at 5 (single backoff sleep capped at 30 s) |
 | `market.indices` | Tickers shown in the market overview |
-| `rag.*` | Knowledge-base paths, chunk size/overlap, `top_k`, `min_score` |
+| `auth.enabled` / `db_path` / `allow_registration` / `max_failed_attempts` / `lockout_minutes` / `session_minutes` | Login screen, account database, sign-up on/off, brute-force lockout, idle timeout (see *Authentication*). Env: `FINANCE_AUTH`, `FINANCE_AUTH_DB` |
+| `rag.pdf_dir` / `rag.pdf_cache_dir` | PDFs indexed page by page (default `src/data/pdfs`; `""` disables) and the extracted-text cache (`.cache/pdf_text`). Needs `pypdf` |
+| `orchestrator.*` | LLM orchestration: `mode` (llm/rules), `max_agents`, `max_replans`, `review_every_step`, `skip_llm_when_confident` (see *Orchestration*) |
+| `rag.chunk_strategy` | `recursive` (paragraph > sentence > word boundaries, default) or `fixed` (sliding word windows) |
+| `rag.embedder` | `hybrid` (default: meaning + exact words), `tfidf`, `sentence_transformers` or `openai` (`OPENAI_API_KEY`). Neural modes need `pip install sentence-transformers`; an unavailable back end falls back to TF-IDF with a warning |
+| `rag.hybrid_semantic` / `rag.hybrid_lexical_weight` | The neural half of hybrid (`sentence_transformers` or `openai`) and the weight of the TF-IDF half (default 0.5) |
+| `rag.embedding_cache_dir` | Where neural corpus embeddings are cached (`.cache/embeddings`; `""` disables) |
+| `rag.router_rescue_score` | A keyword-free question is still answered if the knowledge base matches it at least this well (0.30; neural/hybrid only), or contains a code found verbatim in the KB |
+| `rag.index_type` | `flat` (exact, default) or `hnsw` (approximate graph index; `hnsw_m`, `hnsw_ef_construction`, `hnsw_ef_search`) |
+| `rag.min_score` / `rag.neural_min_score` / `rag.hybrid_min_score` | Score floor for TF-IDF (0.05), neural (0.30) and hybrid (0.15); calibrate with `scripts/eval_retrieval.py --calibrate` |
+| `rag.*` (other) | Knowledge-base paths, chunk size/overlap, `top_k` |
 
 Environment overrides: `FINANCE_LLM_PROVIDER`, `FINANCE_MARKET_PROVIDER`, `FINANCE_CONFIG`, `FINANCE_LOG_DIR` (default `logs/`), `FINANCE_CALL_LOG=off` (disable the call/token logs).
 
@@ -171,11 +282,11 @@ Works with `mcp` 1.x (`FastMCP`) and 2.x (`MCPServer`). The server is stdio-base
 ## Testing
 
 ```bash
-python -m pytest --cov            # 199 tests, ~96% line coverage (offline: mock market data, no API keys)
+python -m pytest --cov            # 300 tests, ~96% line coverage (offline: mock market data, no API keys)
 python scripts/benchmark.py       # latency benchmarks
 ```
 
-Tests cover each agent, routing (rules, LLM path, follow-ups, off-topic, advice), guardrails (injection, PII, advice, rewrite validation), the call/token logs and token savers, the retry cap, the graph (multi-agent hand-off, session isolation, history trimming, failure containment), RAG relevance and filters, market-data fallbacks (retry/backoff, rate limits, stale cache, mock), finance math, parsing edge cases, the Streamlit app (`streamlit.testing`), and the MCP tools. The Anthropic / Gemini / OpenAI client classes themselves are not exercised (they need keys); the shared retry/error wrapper is.
+Tests cover each agent, routing (rules, LLM path, follow-ups, off-topic, advice), guardrails (injection, PII, advice, rewrite validation), the call/token logs and token savers, the retry cap, chunking strategies, the HNSW index, pluggable embedders, the eval metrics and quality floors, the graph (multi-agent hand-off, session isolation, history trimming, failure containment), RAG relevance and filters, market-data fallbacks (retry/backoff, rate limits, stale cache, mock), finance math, parsing edge cases, the Streamlit app (`streamlit.testing`), account creation/login/lockout/session expiry, and the MCP tools. The Anthropic / Gemini / OpenAI client classes themselves are not exercised (they need keys); the shared retry/error wrapper is.
 
 ### Benchmarks (this machine: offline LLM, mock market data)
 
@@ -195,6 +306,10 @@ With an LLM enabled, each agent in a turn adds one provider round-trip (cache hi
 |---|---|
 | "Sample data (live feed unavailable)" banners | yfinance failed or is rate-limited; the app is using clearly labelled sample prices. Retry later, or set `ALPHA_VANTAGE_API_KEY` as a secondary source |
 | "Cached data (may be outdated)" | Live fetch failed; showing the last good value past its 30-min TTL |
+| PDF pages never show up in answers | `pip install pypdf`; check `rag.pdf_dir` and that the PDF is under a sub-folder such as `src/data/pdfs/tax/`; look for `pdf ... pages -> ... documents` in `logs/app.log`. Scanned (image-only) PDFs contain no text |
+| Locked out of an account | Wait `auth.lockout_minutes`, or `python scripts/manage_users.py unlock <username>`; forgot password: `python scripts/manage_users.py reset-password <username>` |
+| Login screen in a demo / test you want anonymous | `FINANCE_AUTH=off` (or `auth.enabled: false`) |
+| Long `ModuleNotFoundError: No module named 'torchvision'` tracebacks ("Examining the path of transformers...") in the terminal | Harmless noise: Streamlit's auto-reload watcher scans `transformers` modules loaded by hybrid search. `.streamlit/config.toml` turns the watcher off (`fileWatcherType = "none"`); run `streamlit run` from the project root so it is picked up. For auto-reload while editing the UI set it to `"auto"`, or `pip install torchvision` |
 | Sidebar says "AI model: offline" | No API key found. Set it as an environment variable in the terminal that launches the app (a `.env` file is not read) and install the provider's SDK |
 | One agent fails now and then | `python scripts/agent_stats.py --failures`, then look at the error type and the failing queries (see *Monitoring*) |
 | An answer lost its LLM wording | The guardrail rejected a rewrite that changed figures/citations and used the grounded draft; look for `rewrite rejected by guardrail` in `logs/app.log` |
@@ -205,11 +320,13 @@ With an LLM enabled, each agent in a turn adds one provider round-trip (cache hi
 
 ## Known limitations
 
-- **Embeddings are TF-IDF**, not neural. They are fast, key-free and good on this vocabulary, but they miss paraphrases with no word overlap. The `Retriever` is the only place to swap in a neural embedder.
+- **Hybrid search needs `pip install sentence-transformers`** (pulls in PyTorch, several hundred MB, plus a model download on first use). Without it the app still runs, but silently degrades to TF-IDF-only search (a warning is logged, and `AI model`/retriever mode shows `tfidf`), where paraphrase hit@3 is 42% instead of 75%. The OpenAI embedder is unmeasured. The eval sets are small (52 retrieval, 19 PDF, 24 routing queries) and the blend weight (0.5), score floors (0.15 hybrid, 0.30 neural) and router rescue threshold (0.30) were chosen on them, from only 4 off-topic queries, so treat the percentages as indicative and re-calibrate on your own data.
 - **Knowledge-base content was written for this project**, not scraped from the cited sites; `reference` links point to the relevant authoritative site section for further reading. Tax limits quoted are labelled as tax-year 2025 and should be verified.
 - **Projections** use fixed illustrative return/volatility assumptions by risk level (4.5-8% / 6-16%); they are not forecasts. The stress-test shocks and asset-class risk scores are rough teaching heuristics.
 - **Asset classification** covers ~40 common tickers; unknown tickers are treated as individual stocks in an "Unclassified" sector (flagged).
 - **Guardrails are regex-based** (advice, injection, PII, off-topic): they miss unusual phrasings and may occasionally flag harmless text. The number check on LLM rewrites ignores whole numbers up to 12.
+- **LLM orchestrator quality is unmeasured** (no API key was available during development; it is covered by tests with a scripted fake LLM). It adds one LLM call to each routed turn (more on failures), and an LLM can still make poor plans - the validation only guarantees a *legal* plan, not a good one. Use `scripts/eval_routing.py --orchestrator` to measure it, and `orchestrator.mode: rules` to switch it off.
 - **Monitoring** records agent exceptions and `ok=False` results only; silent fallbacks to cached/mock market data are not counted as failures (check the freshness label). The LLM SDKs also retry internally on top of the app's capped retry helper.
-- **Docker** files are provided but were not built in the development environment. Streamlit session memory is in-process (no persistence across restarts, no authentication).
+- **PDFs:** text extraction only (no OCR, tables and multi-column layouts come out as flat text; the cover page's one-off print-proof banner is not removed). Retrieval is per page, so an answer that spans two pages is cited as two pages. TF-IDF vectors are converted to dense arrays, which is fine for ~500 chunks (~35 MB) but will not scale to tens of thousands of chunks; for large PDF collections use a neural-only mode (`rag.embedder: sentence_transformers`) with `rag.index_type: hnsw`. The TF-IDF half is re-fitted at every start (cheap); neural corpus embeddings are cached on disk.
+- **Docker** files are provided but were not built in the development environment. Streamlit conversation memory is in-process (no persistence across restarts). Authentication is basic local username/password (see *Authentication* for what it does not cover).
 - The optional LLM layer was not run against a live provider during development (no keys available); it is covered through a fake client.

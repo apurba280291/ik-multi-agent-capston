@@ -1,0 +1,161 @@
+{
+  "description": "Retrieval eval for the IRS Publication 590-A PDF (src/data/pdfs/tax). Expected = every page whose text contains the 'anchor' answer sentence; titles are '<pdf title> (p. N)'. Needs pypdf and the PDF; run: python scripts/eval_retrieval.py --set pdf_eval.json kind=exact: rare identifiers (IRS form numbers); every page whose text contains the identifier counts as an answer.",
+  "queries": [
+    {
+      "q": "what is the deadline for making a roth ira contribution for 2025",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 43)"
+      ],
+      "kind": "direct",
+      "anchor": "contributions for 2025 by the due date \\(not including extensions\\)"
+    },
+    {
+      "q": "what is the penalty for contributing too much to a roth ira",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 43)"
+      ],
+      "kind": "direct",
+      "anchor": "6% excise tax applies to any excess contribution to a Roth IRA"
+    },
+    {
+      "q": "what happens if I inherit an IRA",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 21)"
+      ],
+      "kind": "direct",
+      "anchor": "If you inherit a traditional IRA, you are called a beneficiary"
+    },
+    {
+      "q": "what counts as compensation for ira contributions",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 6)"
+      ],
+      "kind": "direct",
+      "anchor": "Generally, compensation is what you earn from working"
+    },
+    {
+      "q": "what is the roth ira income limit for 2025",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 2)",
+        "IRS Publication 590-A (2025) (p. 39)",
+        "IRS Publication 590-A (2025) (p. 42)"
+      ],
+      "kind": "direct",
+      "anchor": "Roth IRA.{0,200}modified AGI.{0,100}(less than|at least)"
+    },
+    {
+      "q": "how do I convert a traditional ira to a roth ira",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 29)"
+      ],
+      "kind": "direct",
+      "anchor": "Converting From Any Traditional IRA Into a Roth IRA"
+    },
+    {
+      "q": "what is the ira contribution limit for 2025 for people age 50 or older",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 1)"
+      ],
+      "kind": "direct",
+      "anchor": "contribution limit remains \\$7,000"
+    },
+    {
+      "q": "can I cancel my ira after opening it",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 9)"
+      ],
+      "kind": "paraphrase",
+      "anchor": "If you revoke your IRA within the revocation period"
+    },
+    {
+      "q": "what if the person who owned the retirement account dies",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 21)"
+      ],
+      "kind": "paraphrase",
+      "anchor": "If you inherit a traditional IRA, you are called a beneficiary"
+    },
+    {
+      "q": "how much can I put away if I earn more than the limit and file jointly",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 2)",
+        "IRS Publication 590-A (2025) (p. 39)",
+        "IRS Publication 590-A (2025) (p. 42)"
+      ],
+      "kind": "paraphrase",
+      "anchor": "Roth IRA.{0,200}modified AGI.{0,100}(less than|at least)"
+    },
+    {
+      "q": "how long do I have to reinvest money I took out of one retirement account into another",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 26)"
+      ],
+      "kind": "paraphrase",
+      "anchor": "within 60 days after you receive the distribution"
+    },
+    {
+      "q": "can my husband or wife who does not work still save for retirement",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 10)"
+      ],
+      "kind": "paraphrase",
+      "anchor": "if you file a joint return and your taxable compensation is less than that of your spouse"
+    },
+    {
+      "q": "form 8880",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 48)",
+        "IRS Publication 590-A (2025) (p. 60)"
+      ],
+      "kind": "exact",
+      "anchor": "Form 8880"
+    },
+    {
+      "q": "what is form 5498",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 53)"
+      ],
+      "kind": "exact",
+      "anchor": "Form 5498"
+    },
+    {
+      "q": "form 1099-r",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 28)",
+        "IRS Publication 590-A (2025) (p. 38)",
+        "IRS Publication 590-A (2025) (p. 60)"
+      ],
+      "kind": "exact",
+      "anchor": "Form 1099-R"
+    },
+    {
+      "q": "form 4547",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 1)",
+        "IRS Publication 590-A (2025) (p. 2)"
+      ],
+      "kind": "exact",
+      "anchor": "Form 4547"
+    },
+    {
+      "q": "form w-2 wages",
+      "expected": [
+        "IRS Publication 590-A (2025) (p. 7)",
+        "IRS Publication 590-A (2025) (p. 12)",
+        "IRS Publication 590-A (2025) (p. 60)"
+      ],
+      "kind": "exact",
+      "anchor": "Form W-2"
+    },
+    {
+      "q": "what is the capital of france",
+      "expected": [],
+      "kind": "out_of_scope"
+    },
+    {
+      "q": "who won the football game last night",
+      "expected": [],
+      "kind": "out_of_scope"
+    }
+  ]
+}

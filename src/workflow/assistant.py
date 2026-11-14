@@ -16,6 +16,7 @@ from src.data.market_data import MarketDataService
 from src.rag.retriever import Retriever
 from src.utils.logging_utils import get_logger
 from src.workflow.graph import FALLBACK, build_graph
+from src.workflow.orchestrator import Orchestrator
 from src.workflow.router import Router
 
 log = get_logger(__name__)
@@ -68,10 +69,31 @@ class FinanceAssistant:
         }
         # Router decides which agent(s) handle a query (LLM classification, or keyword rules when offline).
         # `llm.routing_confident_score: 0` disables the "skip the LLM when rules are sure" shortcut.
-        self.router = Router(self.llm, int(self.settings.get("llm.routing_confident_score", 5)) or None)
+        # "llm": an LLM orchestrator plans which agents run (rules are the fallback). "rules": the legacy path - keyword rules,
+        # with the LLM only classifying when the rules are unsure.
+        mode = str(self.settings.get("orchestrator.mode", "llm")).lower()
+        self.orchestrator = None
+        if mode == "llm":
+            self.orchestrator = Orchestrator(
+                self.llm,
+                list(self.agents),
+                max_agents=int(self.settings.get("orchestrator.max_agents", 3)),
+                max_replans=int(self.settings.get("orchestrator.max_replans", 2)),
+                review_every_step=bool(self.settings.get("orchestrator.review_every_step", False)),
+                skip_when_confident=bool(self.settings.get("orchestrator.skip_llm_when_confident", False)),
+            )
+        elif mode != "rules":
+            log.warning("unknown orchestrator.mode %r; using rules", mode)
+        self.router = Router(
+            self.llm,
+            int(self.settings.get("llm.routing_confident_score", 5)) or None,
+            retriever=self.retriever,
+            rescue_score=float(self.settings.get("rag.router_rescue_score", 0.30)),
+            llm_routing=self.orchestrator is None,
+        )
         # Compile the LangGraph workflow: understand -> route -> agent(s) -> compose,
         # with conversation memory checkpointed per session_id. Last arg caps remembered chat turns.
-        self.graph = build_graph(self.agents, self.router, int(self.settings.get("app.max_history_turns", 20)))
+        self.graph = build_graph(self.agents, self.router, int(self.settings.get("app.max_history_turns", 20)), orchestrator=self.orchestrator)
 
     def chat(
         self,

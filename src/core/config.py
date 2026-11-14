@@ -40,6 +40,10 @@ class Settings:
 _ENV_OVERRIDES = {
     "FINANCE_LLM_PROVIDER": "llm.provider",
     "FINANCE_MARKET_PROVIDER": "market.provider",
+    "FINANCE_EMBEDDER": "rag.embedder",
+    "FINANCE_AUTH": "auth.enabled",
+    "FINANCE_ORCHESTRATOR": "orchestrator.mode",
+    "FINANCE_AUTH_DB": "auth.db_path",
 }
 
 
