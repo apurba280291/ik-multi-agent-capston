@@ -1,13 +1,18 @@
 flowchart TD
-    Q([User message]) --> UN["understand<br/>extract tickers · update profile<br/>reset per-turn fields"]
-    UN --> RO["route<br/>choose agents + flags"]
-    RO --> D{queue empty?}
-
-    D -- "greeting / off-topic" --> CO
-    D -- "no" --> AGN["run first agent in queue<br/>pop itself · write AgentResponse<br/>leave data in shared"]
-    AGN --> D2{more agents<br/>in queue?}
-    D2 -- yes --> AGN
-    D2 -- no --> CO
+    Q([User message]) --> UN["understand<br/>redact PII · flag prompt injection<br/>extract tickers · update profile"]
+    UN --> RO["route<br/>deterministic: greeting · off-topic · advice<br/>keyword rules propose agents"]
+    RO --> D0{"agents proposed?"}
+    D0 -- "no: greeting / off-topic / blocked<br/>(LLM never consulted)" --> CO
+    D0 -- yes --> OR["orchestrate<br/>LLM chooses agents + order<br/>(validated, capped, dependency order)"]
+    OR -. "LLM off / invalid reply" .-> RULES["use the keyword-rule plan"]
+    OR --> NX
+    RULES --> NX{"next in queue?"}
+    NX -- yes --> AGN["run agent<br/>pop itself · write AgentResponse<br/>leave data in shared"]
+    AGN --> RQ{"failed, or asked<br/>the user for input?"}
+    RQ -- "no" --> NX
+    RQ -- "yes (within re-plan budget)" --> RVW["review<br/>LLM: continue, add an agent, or finish"]
+    RVW --> NX
+    NX -- "queue empty" --> CO
 
     CO["compose<br/>merge sections · dedupe citations<br/>advice note · disclaimer · save history"]
     CO --> ANS([Final answer + sources])

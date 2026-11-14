@@ -33,6 +33,21 @@ market:
     AGG: US Bonds
     GLD: Gold
 
+orchestrator:
+  mode: llm                   # llm: an LLM plans which agents run and re-plans on failure (falls back to rules if no LLM/invalid reply); rules: keyword rules only
+  max_agents: 3               # agents per turn chosen by the plan (one extra is allowed to replace a failed one)
+  max_replans: 2              # LLM reviews per turn after a failed agent / a request for user input
+  review_every_step: false    # true = full supervisor loop: the LLM reviews after every agent (more LLM calls)
+  skip_llm_when_confident: false  # true = save the planning call when the keyword rules are already confident
+
+auth:
+  enabled: true               # false (or FINANCE_AUTH=off) skips the login screen: single-user / demo mode
+  db_path: data/users.sqlite3 # SQLite file with accounts (scrypt-hashed passwords); git-ignored
+  allow_registration: true    # false: only accounts created with scripts/manage_users.py can sign in
+  max_failed_attempts: 5      # failed logins per username before it is locked
+  lockout_minutes: 15
+  session_minutes: 60         # idle time before a signed-in session expires (0 = never)
+
 rag:
   knowledge_base_dir: src/data/knowledge_base
   glossary_file: src/data/glossary.json

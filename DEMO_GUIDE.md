@@ -6,11 +6,12 @@ A walkthrough of what the agent can do and the exact commands to show it. Everyt
 
 Finnie is a multi-agent AI finance assistant that teaches beginners about investing.
 
-- **6 specialised agents** orchestrated by a **LangGraph** workflow (`understand -> route -> agents -> compose`)
+- **6 specialised agents** run by an **LLM-driven orchestrator** inside a **LangGraph** workflow (`understand -> route -> orchestrate -> agents (-> review) -> compose`); keyword rules are the fallback
 - **RAG** over a FAISS knowledge base (81 articles + 48 glossary terms) with source citations; recursive/fixed chunking, **hybrid search (semantic meaning + exact-word matching)** with a TF-IDF fallback, flat or HNSW index, **PDF ingestion with page-level citations** (sample: 62-page IRS Publication 590-A), and a labelled eval harness
 - **Live market data** (yfinance / Alpha Vantage) with cache, retry/backoff and graceful fallbacks
 - **Streamlit** UI, plus an **MCP server** so Claude Desktop can use the same tools
 - **Guardrails** (advice, prompt-injection, PII redaction, LLM-output validation) and a disclaimer on every answer; it never gives personalised advice
+- **User authentication**: sign-in required; scrypt-hashed passwords, brute-force lockout, idle session timeout, per-user chat sessions
 - **Observability**: per-agent call log, LLM token-usage log, and summary scripts; token savers and a hard cap of 5 retries
 
 ## 2. Setup and run
@@ -19,6 +20,8 @@ Finnie is a multi-agent AI finance assistant that teaches beginners about invest
 pip install -r requirements.txt
 python -m streamlit run src/web_app/app.py     # opens http://localhost:8501
 ```
+
+The app opens on a **login screen**: use the *Create account* tab on first run (username 3-32 chars, password 8+ chars). For a quick anonymous demo: `$env:FINANCE_AUTH="off"` before launching. Admin tools: `python scripts/manage_users.py list|create|reset-password|unlock|delete <username>`.
 
 Optional: set `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `OPENAI_API_KEY` **as an environment variable in the same terminal** (the app does not read `.env`) to get conversational rewriting, and `pip install openai` (or `google-genai`) for that provider. The sidebar shows `AI model: offline` when no key is set.
 
@@ -48,7 +51,9 @@ Type these into the **Chat** tab. After each answer, expand **"How I answered"**
 I own 10 VTI, 20 AAPL and $2,000 in BND. Analyze my portfolio and plan $100,000 in 10 years
 ```
 
-Routes to `portfolio_analysis` then `goal_planning`. The goal section reuses the portfolio's equity weight, so it shows agents sharing data through the graph state.
+The orchestrator plans `portfolio_analysis` then `goal_planning` (it enforces that order). The goal section reuses the portfolio's equity weight, so it shows agents sharing data through the graph state. With an LLM key, expand **"How I answered"** to see `orchestrator[llm]: portfolio_analysis -> goal_planning (<reason>)`; offline it shows `route[rules]`.
+
+**Re-planning demo (needs an LLM key):** `Analyze my portfolio and plan $50,000 in 8 years with $300 a month` (no holdings given). The portfolio agent asks for holdings, the orchestrator reviews, and the trace shows `orchestrator[review/llm]: ...` deciding whether to continue or finish.
 
 ### Guardrails
 
@@ -62,6 +67,14 @@ Routes to `portfolio_analysis` then `goal_planning`. The goal section reuses the
 | `What is an ETF? my email is a.b@x.com` | Answers normally; the email is masked before agents/LLM/history see it (trace shows `guardrail: PII redacted`) |
 
 With an LLM key set there is one more guardrail: if the model's rewrite adds a figure that is not in the grounded draft, or drops a `[n]` citation, it is discarded and the grounded draft is shown (logged as `rewrite rejected by guardrail`).
+
+### Authentication demo
+
+1. Open the app: only the login form shows (no chat, no data).
+2. *Create account* with a short password (`short`): rejected with the policy message. Use a real one (e.g. `blue-train-42-lemon`): you are signed in.
+3. Chat, then **Sign out** in the sidebar: the conversation is cleared. Create a second user: it starts empty and has its own session.
+4. Sign in with a wrong password 5 times: the account locks for 15 minutes. The error text is identical for unknown usernames (no user enumeration).
+5. Sidebar *Account* > change password. Idle for `auth.session_minutes` and the session expires.
 
 ## 4. UI tabs
 
@@ -116,7 +129,7 @@ python scripts/eval_routing.py --misses        # router exact match / recall / p
 
 Say it honestly: TF-IDF gets 100% hit@3 on direct queries but 42% on paraphrases, which is why neural embeddings are pluggable. HNSW matches flat exactly here because the corpus is tiny.
 
-**Run the tests (236 tests, offline)**
+**Run the tests (300 tests, offline)**
 
 ```powershell
 python -m pytest
@@ -166,6 +179,8 @@ Note: the tools are unit-tested, but not verified inside Claude Desktop itself.
 - `rag.pdf_dir`: PDFs under `src/data/pdfs/<category>/` are indexed page by page (`pip install pypdf`); `""` disables
 - `rag.*`: `chunk_strategy` (recursive | fixed), `embedder` (hybrid | tfidf | sentence_transformers | openai), `hybrid_lexical_weight`, `router_rescue_score`, `index_type` (flat | hnsw), chunk size/overlap, `top_k`, `min_score`
 - `llm.routing_confident_score` / `polish_max_chars` / `polish_cache_ttl_seconds`: token savers (skip LLM routing when rules are sure, skip oversized drafts, cache identical rewrites)
+- `auth.*`: `enabled` (`FINANCE_AUTH=off` to skip login), `allow_registration`, `max_failed_attempts`, `lockout_minutes`, `session_minutes`, `db_path`
+- `orchestrator.*`: `mode` (llm | rules; `FINANCE_ORCHESTRATOR`), `max_agents`, `max_replans`, `review_every_step`, `skip_llm_when_confident`
 - `market.retries`: attempts are capped at 5 and a single backoff sleep at 30 s
 - `FINANCE_LOG_DIR`, `FINANCE_CALL_LOG=off`: log folder / disable call and token logs
 
@@ -182,7 +197,9 @@ User -> Streamlit / MCP -> LangGraph: understand -> route -> [agent -> agent ...
 ```
 
 - **understand**: redacts PII, flags prompt injection, extracts tickers (remembered across turns) and risk/age into the user profile
-- **route**: weighted keyword rules, with LLM classification only when the rules are unsure; detects greetings, off-topic, "should I buy" requests
+- **route**: deterministic - greetings, off-topic, "should I buy" requests, and keyword rules that propose agents
+- **orchestrate**: an LLM chooses which agents run and in what order (validated JSON; falls back to the rules plan if there is no LLM or the reply is invalid)
+- **review**: only after an agent fails or asks the user for input, the LLM may continue, swap in another agent, or finish early
 - **agents**: each pops itself off the queue and can leave data in shared state for later agents
 - **compose**: merges sections, consolidates citations, adds disclaimer, trims history
 - **Resilience**: `chat()` never raises; a failing agent is contained while the others still answer
@@ -200,5 +217,6 @@ More detail: [docs/DESIGN.md](docs/DESIGN.md), [docs/IMPLEMENTATION_FLOW.md](doc
 - Asset classification covers ~40 common tickers; others are flagged "Unclassified"
 - Guardrails are regex-based, so unusual phrasings can slip past or harmless text can be flagged
 - Monitoring counts agent exceptions and `ok=False` only; silent fallbacks to cached/mock market data are not counted as failures
-- Session memory is in-process (no persistence, no authentication)
+- The LLM orchestrator's plan quality is unmeasured (tested with a scripted fake LLM; measure with `python scripts/eval_routing.py --orchestrator`); it adds one LLM call per routed turn. Offline it is identical to the old rules router
+- Authentication is basic local username/password: plain HTTP unless you put an HTTPS proxy in front, no email verification or e-mailed reset (admin CLI instead), no MFA, no "remember me"; conversation memory is in-process, and the MCP server is unauthenticated
 - Docker files and live-LLM paths were not exercised in development

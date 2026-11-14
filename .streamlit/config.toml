@@ -1,0 +1,9 @@
+# Project-level Streamlit settings (read when you run `streamlit run` from the project root).
+
+[server]
+# Streamlit's auto-reload watcher scans every imported module. With hybrid search the app imports sentence-transformers ->
+# transformers, whose lazily loaded image-processing modules need `torchvision`, so the watcher prints long
+# "ModuleNotFoundError: No module named 'torchvision'" tracebacks. They are harmless but noisy.
+# "none" turns the watcher off (the app does not reload when you edit code; use the Rerun menu or restart).
+# While developing the UI set this to "auto" (or "watchdog"/"poll") and ignore the noise or `pip install torchvision`.
+fileWatcherType = "none"

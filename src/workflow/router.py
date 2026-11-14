@@ -100,8 +100,11 @@ class Router:
         confident_score: int | None = 5,
         retriever=None,
         rescue_score: float = 0.30,
+        llm_routing: bool = True,
     ):
         self.llm = llm or OfflineLLM()
+        # False when an Orchestrator makes the LLM decision instead (the router then only applies the deterministic rules).
+        self.llm_routing = llm_routing
         # Messages with no finance keyword are normally refused as off-topic. With a retriever, they are kept if the
         # knowledge base clearly recognises them: a code found verbatim (e.g. "form 8880"), or - for neural/hybrid
         # retrieval, whose scores are comparable - a top hit scoring at least ``rescue_score``.
@@ -128,7 +131,7 @@ class Router:
             else:
                 decision.method = "context"
                 decision.intents = self._follow_up(history) or ["finance_qa"]
-        elif self.llm.available and not self._rules_confident(decision):
+        elif self.llm_routing and self.llm.available and not self._rules_confident(decision):
             llm_intents = self._llm_route(text, history or [])
             if llm_intents:
                 decision.intents, decision.method = sorted(llm_intents, key=AGENT_ORDER.index), "llm"
@@ -146,6 +149,9 @@ class Router:
         if self.retriever.mode == "tfidf":  # TF-IDF scores are not comparable across queries; use the identifier test only
             return False
         return bool(self.retriever.search(text, k=1, min_score=self.rescue_score))
+
+    def rules_confident(self, decision: RouteDecision) -> bool:
+        return self._rules_confident(decision)
 
     def _rules_confident(self, decision: RouteDecision) -> bool:
         if self.confident_score is None or not decision.intents:

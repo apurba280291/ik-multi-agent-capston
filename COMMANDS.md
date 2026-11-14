@@ -37,7 +37,7 @@ setx OPENAI_API_KEY "sk-..."              # make permanent (open a new terminal 
 ## 3. Run
 
 ```powershell
-python -m streamlit run src/web_app/app.py     # http://localhost:8501 ; sidebar shows "AI model: <provider>" or "offline"
+python -m streamlit run src/web_app/app.py     # http://localhost:8501 ; login screen first (create an account on first visit)
 python -m src.mcp_server.server                # MCP server for Claude Desktop (stdio)
 docker compose up --build                      # optional; not verified in development
 ```
@@ -48,14 +48,42 @@ Quick one-off question without the UI:
 python -c "from src.workflow.assistant import FinanceAssistant; r=FinanceAssistant().chat('What is an ETF?', session_id='demo'); print(r.agents); print(r.answer); print(r.trace)"
 ```
 
+### Users and login
+
+```powershell
+$env:FINANCE_AUTH = "off"                                # skip the login screen (anonymous single-user mode)
+python scripts/manage_users.py list                      # accounts, creation and last-login time
+python scripts/manage_users.py create alice              # prompts for the password (never on the command line)
+python scripts/manage_users.py reset-password alice
+python scripts/manage_users.py unlock alice              # clear a lockout (5 failed logins -> 15 min)
+python scripts/manage_users.py delete alice
+python -m pytest tests/test_auth.py tests/test_auth_ui.py -q
+Select-String "login|account" logs\app.log               # audit trail: logins, failures, lockouts (no passwords)
+```
+
+Accounts live in `data/users.sqlite3` (override: `$env:FINANCE_AUTH_DB`); back it up like any database, and never commit it. Config keys: `auth.*` in `config.yaml`.
+
 ## 4. Test and benchmark
 
 ```powershell
-python -m pytest -q                        # 236 tests, offline (mock data, no keys needed)
+python -m pytest -q                        # 300 tests, offline (mock data, no keys needed)
 python -m pytest --cov=src -q              # with coverage (~95%)
 python -m pytest tests/test_guardrails.py -v
 python scripts/benchmark.py                # latency benchmarks
 ```
+
+## 4a. LLM orchestrator
+
+```powershell
+$env:FINANCE_ORCHESTRATOR = "rules"                     # switch the LLM orchestrator off (keyword rules only; the previous behaviour)
+$env:FINANCE_ORCHESTRATOR = "llm"                       # default; needs an LLM key to do anything, otherwise it is a no-op
+python scripts/eval_routing.py --orchestrator --misses   # rules vs the LLM's plans on evals/routing_eval.json (needs an API key)
+python -m pytest tests/test_orchestrator.py -q           # scripted fake-LLM tests: plans, fallbacks, re-planning, caps
+python scripts/token_usage.py --calls                    # orchestrator calls appear with caller "orchestrator"
+Select-String "orchestrator" logs\app.log                # warnings when an LLM plan call failed and the rules were used
+```
+
+The chat's **How I answered** panel (or `result.trace`) shows `orchestrator[llm]: ...`, `orchestrator[rules]: ...` and `orchestrator[review/llm]: ...` lines. Settings: `orchestrator.*` in `config.yaml`.
 
 ## 4b. RAG and routing evals
 

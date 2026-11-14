@@ -1,20 +1,23 @@
 flowchart TB
     subgraph Clients
-        UI["Streamlit UI<br/>chat · portfolio · market · goals · knowledge"]
+        UI["Streamlit UI<br/>login · chat · portfolio · market · goals · knowledge"]
         MCP["MCP client<br/>Claude Desktop"]
     end
 
-    UI --> FA
+    UI --> AUTH["Auth<br/>scrypt passwords · lockout · session timeout"] --> FA
     MCP --> MS["mcp_server/server.py"] --> FA
 
     FA["FinanceAssistant facade<br/>workflow/assistant.py"]
 
     subgraph LG["LangGraph StateGraph · MemorySaver checkpoint per session"]
         direction LR
-        U[understand] --> R[route] --> AG["agent nodes<br/>1–3 in pipeline order"] --> C[compose]
+        U["understand<br/>PII redaction · injection block"] --> R["route<br/>rules · off-topic · advice"] --> O["orchestrate<br/>LLM plans agents + order"] --> AG["agent nodes<br/>run the plan"] --> C[compose]
+        AG -.->|"failed / needs input"| RV["review<br/>LLM keeps, changes or ends plan"]
+        RV -.-> AG
     end
     FA --> LG
-    RT["Router<br/>LLM JSON classify or keyword rules"] -.-> R
+    ORCH["Orchestrator<br/>validated JSON · caps · dependency order<br/>falls back to the rules plan"] -.-> O
+    ORCH -.-> RV
 
     subgraph Agents
         A1["Market Analysis"]
@@ -28,7 +31,7 @@ flowchart TB
 
     subgraph Services
         MD["MarketDataService<br/>cache → yfinance → Alpha Vantage<br/>→ stale cache → mock"]
-        RAG["Retriever<br/>FAISS + TF-IDF"]
+        RAG["Hybrid retriever<br/>neural meaning + TF-IDF exact words<br/>FAISS flat / HNSW"]
         FM["Pure functions<br/>finance_math · portfolio_analysis · goal_planner"]
     end
     A1 --> MD
@@ -40,8 +43,8 @@ flowchart TB
     A5 --> RAG
     A6 --> RAG
 
-    KB[("Knowledge base<br/>81 articles · 48 glossary terms")] --> RAG
+    KB[("Knowledge base<br/>81 articles · 48 glossary terms · PDFs by page")] --> RAG
     LLM["LLM client (optional)<br/>Anthropic · Gemini · OpenAI<br/>fallback: OfflineLLM"]
-    Agents -.-> LLM
-    RT -.-> LLM
+    Agents -.->|"rewrite grounded drafts"| LLM
+    ORCH -.->|"plan / review"| LLM
     CFG["config.yaml + env vars"] -.-> LG

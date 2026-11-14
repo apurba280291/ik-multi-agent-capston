@@ -6,3 +6,8 @@ services:
     env_file:
       - path: .env
         required: false
+    volumes:
+      - finnie-data:/app/data   # user accounts (auth.db_path); without this they are lost when the container is recreated
+
+volumes:
+  finnie-data:

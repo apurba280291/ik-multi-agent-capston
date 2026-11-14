@@ -13,12 +13,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
+from src.auth.service import User  # noqa: E402
+from src.core.config import load_settings  # noqa: E402
 from src.core.goal_planner import plan_goal  # noqa: E402
 from src.core.portfolio_analysis import analyze_portfolio  # noqa: E402
 from src.data.assets import load_sample_portfolios  # noqa: E402
 from src.data.market_data import MarketDataService  # noqa: E402
 from src.utils.formatting import DISCLAIMER, money  # noqa: E402
 from src.web_app import charts  # noqa: E402
+from src.web_app.auth_ui import account_panel, require_login  # noqa: E402
 from src.workflow.assistant import FinanceAssistant  # noqa: E402
 
 st.set_page_config(page_title="Finnie - AI Finance Assistant", page_icon="💬", layout="wide")
@@ -51,10 +54,11 @@ def freshness_caption(item) -> None:
     (st.warning if item.is_mock or item.is_stale else st.caption)(text)
 
 
-def sidebar(bot: FinanceAssistant) -> None:
+def sidebar(bot: FinanceAssistant, settings, user: User | None) -> None:
     with st.sidebar:
         st.title("Finnie")
         st.caption("Your beginner-friendly finance guide")
+        account_panel(settings, user)
         st.selectbox("Your risk tolerance", ["conservative", "moderate", "aggressive"], key="risk")
         st.number_input("Your age", 16, 90, key="age")
         st.divider()
@@ -274,8 +278,10 @@ def knowledge_tab(bot: FinanceAssistant) -> None:
 
 def main() -> None:
     init_state()
+    settings = load_settings()
+    user = require_login(settings)  # stops here (login form only) until signed in; no-op when auth.enabled is false
     bot = get_assistant()
-    sidebar(bot)
+    sidebar(bot, settings, user)
     st.warning("Educational tool only - not financial advice.", icon="⚠️")
     tabs = st.tabs(["💬 Chat", "📊 Portfolio", "📈 Market", "🎯 Goals", "📚 Knowledge"])
     with tabs[0]:

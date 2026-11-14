@@ -9,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 os.environ["FINANCE_LOG_DIR"] = tempfile.mkdtemp(prefix="finnie-logs-")  # keep test runs out of the real logs/
 os.environ["FINANCE_LLM_PROVIDER"] = "offline"
+os.environ["FINANCE_AUTH"] = "off"  # app tests run anonymous; test_auth_ui.py turns auth on explicitly
+os.environ["FINANCE_AUTH_DB"] = os.path.join(os.environ["FINANCE_LOG_DIR"], "test-users.sqlite3")
+os.environ["FINANCE_EMBEDDER"] = "tfidf"  # no neural model load in the app tests
 os.environ["FINANCE_MARKET_PROVIDER"] = "mock"
 for key in ("ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ALPHA_VANTAGE_API_KEY"):
     os.environ.pop(key, None)
